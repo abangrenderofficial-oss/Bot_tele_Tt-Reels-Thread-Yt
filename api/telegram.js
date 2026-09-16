@@ -48,7 +48,7 @@ const START_TEXT = [
   'TikTok video: bot hantar video seperti biasa. TikTok photo/slideshow: selepas pilih Download Biasa, bot akan beri pilihan Split (Image + Audio) atau Video.',
   'TikTok / Instagram / Threads / X: jika video melebihi had Telegram, bot akan cuba compress HQ dahulu sambil mengekalkan aspect ratio asal.',
   '',
-  '📱 Status HQ: 1080×1920 H.264/AAC, maksimum 29 saat setiap part, ratio asal dikekalkan tanpa stretch. /status <link> masih boleh digunakan sebagai shortcut.',
+  '📱 Status HQ: video pendek guna 1080×1920 / 29s per part. Video panjang auto tukar ke 720×1280 / 59s per part supaya tak terlalu banyak bahagian. Ratio asal dikekalkan tanpa stretch. /status <link> masih boleh digunakan sebagai shortcut.',
   '',
   'Gunakan hanya untuk media yang anda miliki atau dibenarkan untuk dimuat turun.',
 ].join('\n');
@@ -383,7 +383,7 @@ async function processStatusMessage(chatId, url, platform) {
   try {
     await sendMessage(
       chatId,
-      '📱 Status HQ sedang disediakan…\nProfile test: 1080×1920, H.264/AAC, maksimum 29 saat setiap part, ratio asal dikekalkan tanpa stretch.',
+      '📱 Status HQ sedang disediakan…\nBot akan pilih profile automatik: 1080×1920 / 29s untuk video pendek, atau 720×1280 / 59s untuk video panjang. Ratio asal kekal tanpa stretch.',
     );
     await sendChatAction(chatId, 'upload_video').catch(() => {});
 
@@ -401,12 +401,19 @@ async function processStatusMessage(chatId, url, platform) {
 
     prepared = await prepareWhatsAppStatusHQ({ sourceUrl: url, platform, video: best });
 
+    if (prepared.switchedForLength) {
+      await sendMessage(
+        chatId,
+        'ℹ️ Video panjang dikesan. Bot auto guna mode Long 720×1280 / 59s per part supaya jumlah bahagian berkurang dan proses lebih stabil.',
+      ).catch(() => {});
+    }
+
     for (const clip of prepared.clips) {
       await sendChatAction(chatId, 'upload_video').catch(() => {});
       const caption = [
         `📱 Status HQ • ${platformLabel(platform)}`,
         `Part ${clip.index}/${clip.count}`,
-        '1080×1920 • H.264/AAC • ratio asal',
+        `${prepared.profile.width}×${prepared.profile.height} • H.264/AAC • ratio asal`,
       ].join('\n');
       await sendVideoFileUpload(chatId, clip.filePath, caption);
     }
@@ -414,7 +421,7 @@ async function processStatusMessage(chatId, url, platform) {
     await sendMessage(
       chatId,
       [
-        '✅ Status HQ siap.',
+        `✅ ${prepared.quality} siap.`,
         '',
         'Cara test yang paling penting:',
         '1. Save part daripada Telegram ke phone.',
