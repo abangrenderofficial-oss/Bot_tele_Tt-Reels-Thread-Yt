@@ -1,0 +1,21 @@
+name: SSSTik Runtime Probe
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/ssstik-runtime-probe.mjs'
+      - '.github/workflows/ssstik-probe.yml'
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Inspect current SSSTik runtime variables
+        run: node scripts/ssstik-runtime-probe.mjs
