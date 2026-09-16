@@ -115,6 +115,32 @@ export async function telegram(method, payload = {}) {
   return parseTelegramResponse(response, method);
 }
 
+export async function getTelegramFileSource(fileId) {
+  if (!fileId) {
+    const err = new Error('Telegram file_id is missing.');
+    err.code = 'TELEGRAM_FILE_ID_MISSING';
+    throw err;
+  }
+
+  const file = await telegram('getFile', { file_id: fileId });
+  if (!file?.file_path) {
+    const err = new Error('Telegram did not return a file path.');
+    err.code = 'TELEGRAM_FILE_PATH_MISSING';
+    throw err;
+  }
+
+  const ext = path.extname(file.file_path).replace(/^\./, '').toLowerCase() || 'mp4';
+  return {
+    url: `${telegramApiBase()}/file/bot${botToken()}/${file.file_path}`,
+    ext,
+    filesize: Number(file.file_size || 0) || null,
+    headers: null,
+    quality: 'Telegram video',
+    hasAudio: true,
+    source: 'telegram-file',
+  };
+}
+
 export async function sendMessage(chatId, text, extra = {}) {
   const interactiveText = String(text);
   if (interactiveText.includes('TikTok photo/slideshow dikesan')) {
