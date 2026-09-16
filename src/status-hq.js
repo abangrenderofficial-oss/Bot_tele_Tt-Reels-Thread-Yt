@@ -188,6 +188,10 @@ function chooseEncodePlan(probe) {
   const height = Number(probe.height || 0);
   const landscape = width > height;
   const squareish = width && height && Math.abs(width - height) / Math.max(width, height) < 0.08;
+  const longForm = duration >= 180;
+  const veryLong = duration >= 420;
+
+  if (veryLong && tier > 540) tier = 540;
 
   let maxWidth;
   let maxHeight;
@@ -214,14 +218,17 @@ function chooseEncodePlan(probe) {
     tier,
     maxWidth,
     maxHeight,
+    duration,
     fps: '30000/1001',
-    preset: videoKbps >= 1800 ? 'fast' : 'veryfast',
+    preset: longForm ? 'superfast' : (videoKbps >= 1800 ? 'fast' : 'veryfast'),
+    scaleFlags: longForm ? 'bicubic' : 'lanczos',
+    threads: 0,
   };
 }
 
 function statusVideoFilter(plan) {
   return [
-    `scale=w=${plan.maxWidth}:h=${plan.maxHeight}:force_original_aspect_ratio=decrease:force_divisible_by=2:flags=lanczos`,
+    `scale=w=${plan.maxWidth}:h=${plan.maxHeight}:force_original_aspect_ratio=decrease:force_divisible_by=2:flags=${plan.scaleFlags || 'lanczos'}`,
     `fps=${plan.fps}`,
   ].join(',');
 }
@@ -235,6 +242,10 @@ async function encodeSingleStatusFile(inputPath, outputPath, plan, bitrateScale 
 
   const args = [
     '-y',
+    '-hide_banner',
+    '-loglevel', 'error',
+    '-nostats',
+    '-nostdin',
     '-i', inputPath,
     '-map', '0:v:0',
     '-map', '0:a:0?',
@@ -255,14 +266,14 @@ async function encodeSingleStatusFile(inputPath, outputPath, plan, bitrateScale 
     '-movflags', '+faststart',
     '-map_metadata', '-1',
     '-f', 'mp4',
-    '-threads', '2',
+    '-threads', String(plan.threads ?? 0),
     outputPath,
   ];
 
   await execFileAsync(
     ffmpegPath,
     args,
-    commandOptions(Number(process.env.STATUS_ENCODE_TIMEOUT_MS || 240000)),
+    commandOptions(Number(process.env.STATUS_ENCODE_TIMEOUT_MS || 260000)),
   );
 
   const fileStat = await stat(outputPath);
