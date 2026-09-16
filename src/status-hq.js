@@ -87,14 +87,23 @@ async function downloadRemoteVideo(item, filePath) {
   return filePath;
 }
 
-async function downloadYouTubeSource(url, outputBase) {
+async function downloadWithYtDlp(url, outputBase, platform = 'generic') {
+  if (!url) {
+    const err = new Error('Status HQ original source URL is missing.');
+    err.code = 'STATUS_SOURCE_URL_MISSING';
+    throw err;
+  }
+
   const binary = ytdlpBinary();
   await chmod(binary, 0o755).catch(() => {});
 
   const outputTemplate = `${outputBase}.%(ext)s`;
+  const format = platform === 'youtube'
+    ? 'bestvideo[height<=1080]+bestaudio/best[height<=1080]'
+    : 'best[height<=1080]/best';
   const args = [
     ...ytdlpCommonArgs(),
-    '--format', 'bestvideo[height<=1080]+bestaudio/best[height<=1080]',
+    '--format', format,
     '--merge-output-format', 'mp4',
     '--ffmpeg-location', ffmpegPath,
     '--no-progress',
@@ -104,14 +113,13 @@ async function downloadYouTubeSource(url, outputBase) {
     url,
   ];
 
-  const { stdout } = await execFileAsync(
-    binary,
-    args,
-    commandOptions(Number(process.env.STATUS_YOUTUBE_TIMEOUT_MS || 90000)),
-  );
+  const timeout = platform === 'youtube'
+    ? Number(process.env.STATUS_YOUTUBE_TIMEOUT_MS || 90000)
+    : Number(process.env.STATUS_YTDLP_TIMEOUT_MS || 120000);
+  const { stdout } = await execFileAsync(binary, args, commandOptions(timeout));
 
   const reported = String(stdout || '').split(/\r?\n/).map((line) => line.trim()).filter(Boolean).at(-1);
-  const candidates = [reported, `${outputBase}.mp4`, `${outputBase}.mkv`, `${outputBase}.webm`].filter(Boolean);
+  const candidates = [reported, `${outputBase}.mp4`, `${outputBase}.mkv`, `${outputBase}.webm`, `${outputBase}.mov`].filter(Boolean);
   for (const candidate of candidates) {
     try {
       const fileStat = await stat(candidate);
@@ -119,9 +127,13 @@ async function downloadYouTubeSource(url, outputBase) {
     } catch {}
   }
 
-  const err = new Error('YouTube Status HQ source could not be downloaded/merged.');
-  err.code = 'STATUS_YOUTUBE_OUTPUT_MISSING';
+  const err = new Error(`${platform} Status HQ source could not be downloaded by yt-dlp.`);
+  err.code = 'STATUS_YTDLP_OUTPUT_MISSING';
   throw err;
+}
+
+async function downloadYouTubeSource(url, outputBase) {
+  return downloadWithYtDlp(url, outputBase, 'youtube');
 }
 
 function parseClockDuration(value) {
@@ -306,7 +318,15 @@ export async function prepareWhatsAppStatusHQ({ sourceUrl, platform, video }) {
     } else {
       inputPath = `${base}-source.${safeExtension(video)}`;
       allPaths.push(inputPath);
-      await downloadRemoteVideo(video, inputPath);
+      try {
+        await downloadRemoteVideo(video, inputPath);
+      } catch (directError) {
+        if (!sourceUrl || platform === 'telegram') throw directError;
+        console.warn('Status HQ direct source fetch failed; falling back to yt-dlp:', directError?.code, directError?.message);
+        await rm(inputPath, { force: true }).catch(() => {});
+        inputPath = await downloadWithYtDlp(sourceUrl, `${base}-source-ytdlp`, platform || 'generic');
+        allPaths.push(inputPath);
+      }
     }
 
     const probe = await probeLocalVideo(inputPath);
