@@ -1,5 +1,8 @@
 import youtubedl from 'youtube-dl-exec';
 
+const TIKWM_API = 'https://www.tikwm.com/api/';
+const TIKWM_ORIGIN = 'https://www.tikwm.com';
+
 function normalizeInfo(raw) {
   if (!raw) return null;
   if (typeof raw === 'string') {
@@ -10,6 +13,15 @@ function normalizeInfo(raw) {
     }
   }
   return raw;
+}
+
+function absoluteUrl(value, origin = TIKWM_ORIGIN) {
+  if (!value || typeof value !== 'string') return '';
+  try {
+    return new URL(value, origin).toString();
+  } catch {
+    return '';
+  }
 }
 
 function qualityLabel(format = {}) {
@@ -62,13 +74,98 @@ function usableVideoFormats(info = {}) {
   return [];
 }
 
-export async function parseMedia(url) {
-  if (/threads\.(net|com)/i.test(url)) {
-    const err = new Error('Threads needs a dedicated free extractor adapter.');
-    err.code = 'THREADS_ADAPTER_PENDING';
+async function parseTikTok(url) {
+  const endpoint = new URL(TIKWM_API);
+  endpoint.searchParams.set('url', url);
+  endpoint.searchParams.set('hd', '1');
+
+  let response;
+  try {
+    response = await fetch(endpoint, {
+      headers: {
+        Accept: 'application/json',
+        'User-Agent': 'Mozilla/5.0 (compatible; ARDownloader/1.0)',
+      },
+      signal: AbortSignal.timeout(Number(process.env.DOWNLOADER_TIMEOUT_MS || 25000)),
+    });
+  } catch (error) {
+    const err = new Error(error?.message || 'TikWM request failed.');
+    err.code = 'DOWNLOADER_ERROR';
     throw err;
   }
 
+  if (!response.ok) {
+    const err = new Error(`TikWM HTTP ${response.status}`);
+    err.code = 'DOWNLOADER_ERROR';
+    throw err;
+  }
+
+  let payload;
+  try {
+    payload = await response.json();
+  } catch {
+    const err = new Error('TikWM returned invalid JSON.');
+    err.code = 'DOWNLOADER_ERROR';
+    throw err;
+  }
+
+  if (payload?.code !== 0 || !payload?.data) {
+    const err = new Error(payload?.msg || 'TikWM could not resolve this TikTok link.');
+    err.code = 'DOWNLOADER_ERROR';
+    throw err;
+  }
+
+  const data = payload.data;
+  const videos = [];
+  const seen = new Set();
+
+  const addVideo = (value, quality) => {
+    const direct = absoluteUrl(value);
+    if (!direct || seen.has(direct)) return;
+    seen.add(direct);
+    videos.push({
+      url: direct,
+      quality,
+      width: data.width ?? null,
+      height: data.height ?? null,
+      ext: 'mp4',
+      hasAudio: true,
+      source: 'direct',
+      headers: null,
+      filesize: null,
+    });
+  };
+
+  addVideo(data.hdplay, 'HD');
+  addVideo(data.play, 'No watermark');
+
+  const images = Array.isArray(data.images)
+    ? data.images
+        .map((item) => ({ url: absoluteUrl(typeof item === 'string' ? item : item?.url) }))
+        .filter((item) => item.url)
+    : [];
+
+  const musicUrl = absoluteUrl(data.music);
+  const audios = musicUrl ? [{ url: musicUrl, quality: 'audio' }] : [];
+
+  if (!videos.length && !images.length && !audios.length) {
+    const err = new Error('No downloadable TikTok media was found.');
+    err.code = 'NO_MEDIA';
+    throw err;
+  }
+
+  return {
+    platform: 'TikTok',
+    title: data.title ?? '',
+    thumbnail: absoluteUrl(data.cover || data.origin_cover),
+    duration: data.duration ?? null,
+    images,
+    videos,
+    audios,
+  };
+}
+
+async function parseWithYtDlp(url) {
   let raw;
   try {
     raw = await youtubedl(url, {
@@ -113,8 +210,24 @@ export async function parseMedia(url) {
   };
 }
 
+export async function parseMedia(url) {
+  if (/threads\.(net|com)/i.test(url)) {
+    const err = new Error('Threads needs a dedicated free extractor adapter.');
+    err.code = 'THREADS_ADAPTER_PENDING';
+    throw err;
+  }
+
+  if (/(^|\.)tiktok\.com/i.test(new URL(url).hostname)) {
+    return parseTikTok(url);
+  }
+
+  return parseWithYtDlp(url);
+}
+
 function qualityScore(value = '') {
-  const match = String(value).match(/(\d{3,4})p?/i);
+  const text = String(value).toLowerCase();
+  if (text.includes('hd')) return 10000;
+  const match = text.match(/(\d{3,4})p?/i);
   return match ? Number(match[1]) : 0;
 }
 
