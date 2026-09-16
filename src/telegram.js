@@ -40,12 +40,22 @@ function productionBaseUrl() {
 async function ensureInteractiveWebhook() {
   const baseUrl = productionBaseUrl();
   const webhookSecret = process.env.TELEGRAM_WEBHOOK_SECRET;
-  if (!baseUrl || !webhookSecret || !process.env.TELEGRAM_BOT_TOKEN) return false;
+  if (!baseUrl || !process.env.TELEGRAM_BOT_TOKEN) return false;
 
   try {
+    const current = await telegram('getWebhookInfo').catch(() => null);
+    const next = new URL(`${baseUrl}/api/telegram`);
+    if (current?.url) {
+      try {
+        const existing = new URL(current.url);
+        const mirrorGroup = existing.searchParams.get('mirror_group');
+        if (mirrorGroup) next.searchParams.set('mirror_group', mirrorGroup);
+      } catch {}
+    }
+
     await telegram('setWebhook', {
-      url: `${baseUrl}/api/telegram`,
-      secret_token: webhookSecret,
+      url: next.toString(),
+      ...(webhookSecret ? { secret_token: webhookSecret } : {}),
       allowed_updates: ['message', 'edited_message', 'callback_query'],
       drop_pending_updates: false,
     });
@@ -76,6 +86,14 @@ function extensionFor(item, contentType = '') {
   return 'mp4';
 }
 
+function appendFormExtra(form, extra = {}) {
+  for (const [key, value] of Object.entries(extra || {})) {
+    if (value === undefined || value === null) continue;
+    if (typeof value === 'object') form.set(key, JSON.stringify(value));
+    else form.set(key, String(value));
+  }
+}
+
 async function parseTelegramResponse(response, method) {
   const result = await response.json().catch(() => null);
   if (!response.ok || !result?.ok) {
@@ -99,10 +117,7 @@ export async function telegram(method, payload = {}) {
 
 export async function sendMessage(chatId, text, extra = {}) {
   const interactiveText = String(text);
-  if (
-    interactiveText.includes('TikTok photo/slideshow dikesan') ||
-    interactiveText.includes('Nak buat apa dengan video ni?')
-  ) {
+  if (interactiveText.includes('TikTok photo/slideshow dikesan')) {
     await ensureInteractiveWebhook();
   }
 
@@ -118,16 +133,17 @@ export function sendChatAction(chatId, action = 'typing') {
   return telegram('sendChatAction', { chat_id: chatId, action });
 }
 
-export function sendVideoUrl(chatId, url, caption = '') {
+export function sendVideoUrl(chatId, url, caption = '', extra = {}) {
   return telegram('sendVideo', {
     chat_id: chatId,
     video: url,
     caption: caption.slice(0, 1024),
     supports_streaming: true,
+    ...extra,
   });
 }
 
-export async function sendVideoUpload(chatId, item, caption = '') {
+export async function sendVideoUpload(chatId, item, caption = '', extra = {}) {
   if (!item?.url) throw new Error('Video source URL is missing.');
 
   const limit = uploadLimitBytes();
@@ -171,6 +187,7 @@ export async function sendVideoUpload(chatId, item, caption = '') {
   form.set('chat_id', String(chatId));
   form.set('caption', caption.slice(0, 1024));
   form.set('supports_streaming', 'true');
+  appendFormExtra(form, extra);
   form.set('video', new Blob([buffer], { type: contentType }), `video.${extension}`);
 
   const response = await fetch(telegramEndpoint('sendVideo'), {
@@ -181,7 +198,7 @@ export async function sendVideoUpload(chatId, item, caption = '') {
   return parseTelegramResponse(response, 'sendVideo');
 }
 
-export async function sendVideoFileUpload(chatId, filePath, caption = '') {
+export async function sendVideoFileUpload(chatId, filePath, caption = '', extra = {}) {
   if (!filePath) throw new Error('Local video path is missing.');
 
   const fileStat = await stat(filePath);
@@ -199,6 +216,7 @@ export async function sendVideoFileUpload(chatId, filePath, caption = '') {
   form.set('chat_id', String(chatId));
   form.set('caption', caption.slice(0, 1024));
   form.set('supports_streaming', 'true');
+  appendFormExtra(form, extra);
   form.set('video', new Blob([buffer], { type: contentType }), `video.${extension}`);
 
   const response = await fetch(telegramEndpoint('sendVideo'), {
