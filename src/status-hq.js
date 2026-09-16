@@ -10,76 +10,7 @@ import { randomUUID } from 'node:crypto';
 import ffmpegPath from 'ffmpeg-static';
 
 const execFileAsync = promisify(execFile);
-
-// Shorter videos use the tested 1080x1920 / 29s profile.
-// If that would create too many parts, switch automatically to StatusDrop's
-// tested longer-clips profile: 720x1280 / ~59s at ~2.2 Mbps. This keeps long
-// videos from being rejected just because they need >6 x 29-second parts.
-const STANDARD_PROFILE = Object.freeze({
-  mode: 'quality',
-  label: '1080p Quality',
-  width: 1080,
-  height: 1920,
-  clipSeconds: 29,
-  fps: '30000/1001',
-  audioKbps: 128,
-  sampleRate: 44100,
-  sizeLimitBytes: Math.round(15.5 * 1024 * 1024),
-  preset: 'fast',
-  retries: Object.freeze([
-    { crf: 23, maxRateKbps: 3800, bufferKbps: 5700 },
-    { crf: 24, maxRateKbps: 3300, bufferKbps: 4950 },
-    { crf: 25, maxRateKbps: 2800, bufferKbps: 4200 },
-  ]),
-});
-
-const LONG_PROFILE = Object.freeze({
-  mode: 'long',
-  label: '720p Long',
-  width: 720,
-  height: 1280,
-  clipSeconds: 59,
-  fps: '30000/1001',
-  audioKbps: 128,
-  sampleRate: 44100,
-  sizeLimitBytes: Math.round(15.5 * 1024 * 1024),
-  preset: 'veryfast',
-  retries: Object.freeze([
-    { crf: 24, maxRateKbps: 2200, bufferKbps: 3300 },
-    { crf: 25, maxRateKbps: 1900, bufferKbps: 2850 },
-    { crf: 26, maxRateKbps: 1650, bufferKbps: 2475 },
-  ]),
-});
-
-function positiveInt(value, fallback) {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed < 1) return fallback;
-  return Math.max(1, Math.floor(parsed));
-}
-
-function chooseProfile(durationSeconds) {
-  const standardMaxClips = positiveInt(process.env.STATUS_HQ_MAX_CLIPS, 6);
-  const standardCount = Math.ceil(durationSeconds / STANDARD_PROFILE.clipSeconds);
-
-  if (standardCount <= standardMaxClips) {
-    return {
-      profile: STANDARD_PROFILE,
-      clipCount: standardCount,
-      maxClips: standardMaxClips,
-      switchedForLength: false,
-    };
-  }
-
-  const longMaxClips = positiveInt(process.env.STATUS_HQ_LONG_MAX_CLIPS, 6);
-  const longCount = Math.ceil(durationSeconds / LONG_PROFILE.clipSeconds);
-  return {
-    profile: LONG_PROFILE,
-    clipCount: longCount,
-    maxClips: longMaxClips,
-    switchedForLength: true,
-    standardCount,
-  };
-}
+const MB = 1024 * 1024;
 
 function commandOptions(timeoutMs) {
   return {
@@ -137,7 +68,7 @@ async function downloadRemoteVideo(item, filePath) {
     method: 'GET',
     headers: sourceHeaders(item.headers),
     redirect: 'follow',
-    signal: AbortSignal.timeout(Number(process.env.STATUS_SOURCE_TIMEOUT_MS || 60000)),
+    signal: AbortSignal.timeout(Number(process.env.STATUS_SOURCE_TIMEOUT_MS || 90000)),
   });
 
   if (!response.ok || !response.body) {
@@ -176,7 +107,7 @@ async function downloadYouTubeSource(url, outputBase) {
   const { stdout } = await execFileAsync(
     binary,
     args,
-    commandOptions(Number(process.env.STATUS_YOUTUBE_TIMEOUT_MS || 65000)),
+    commandOptions(Number(process.env.STATUS_YOUTUBE_TIMEOUT_MS || 90000)),
   );
 
   const reported = String(stdout || '').split(/\r?\n/).map((line) => line.trim()).filter(Boolean).at(-1);
@@ -205,7 +136,7 @@ async function probeLocalVideo(filePath) {
     await execFileAsync(
       ffmpegPath,
       ['-hide_banner', '-i', filePath],
-      commandOptions(Number(process.env.STATUS_PROBE_TIMEOUT_MS || 10000)),
+      commandOptions(Number(process.env.STATUS_PROBE_TIMEOUT_MS || 12000)),
     );
   } catch (error) {
     stderr = String(error?.stderr || error?.message || '');
@@ -226,44 +157,100 @@ async function probeLocalVideo(filePath) {
   };
 }
 
-function statusVideoFilter(profile) {
+function configuredUploadLimitBytes() {
+  const configured = Number(process.env.TELEGRAM_UPLOAD_MAX_MB || 0);
+  const mb = Number.isFinite(configured) && configured > 0 ? configured : 50;
+  return Math.floor(mb * MB);
+}
+
+function targetOutputBytes() {
+  const uploadLimit = configuredUploadLimitBytes();
+  const customMb = Number(process.env.STATUS_HQ_TARGET_MB || 0);
+  const requested = Number.isFinite(customMb) && customMb > 0 ? customMb * MB : 45 * MB;
+  return Math.floor(Math.min(requested, uploadLimit * 0.9));
+}
+
+function chooseEncodePlan(probe) {
+  const duration = Math.max(1, Number(probe.duration || 0));
+  const audioKbps = 128;
+  const muxSafety = 0.92;
+  const targetBytes = targetOutputBytes();
+  const totalKbps = Math.max(300, Math.floor((targetBytes * 8 / duration / 1000) * muxSafety));
+  const videoKbps = Math.max(180, Math.min(4300, totalKbps - audioKbps - 60));
+
+  let tier;
+  if (videoKbps >= 2400) tier = 1080;
+  else if (videoKbps >= 1050) tier = 720;
+  else if (videoKbps >= 650) tier = 540;
+  else tier = 360;
+
+  const width = Number(probe.width || 0);
+  const height = Number(probe.height || 0);
+  const landscape = width > height;
+  const squareish = width && height && Math.abs(width - height) / Math.max(width, height) < 0.08;
+
+  let maxWidth;
+  let maxHeight;
+  if (squareish) {
+    const side = tier === 1080 ? 1080 : tier === 720 ? 720 : tier === 540 ? 540 : 360;
+    maxWidth = side;
+    maxHeight = side;
+  } else if (landscape) {
+    if (tier === 1080) [maxWidth, maxHeight] = [1920, 1080];
+    else if (tier === 720) [maxWidth, maxHeight] = [1280, 720];
+    else if (tier === 540) [maxWidth, maxHeight] = [960, 540];
+    else [maxWidth, maxHeight] = [640, 360];
+  } else {
+    if (tier === 1080) [maxWidth, maxHeight] = [1080, 1920];
+    else if (tier === 720) [maxWidth, maxHeight] = [720, 1280];
+    else if (tier === 540) [maxWidth, maxHeight] = [540, 960];
+    else [maxWidth, maxHeight] = [360, 640];
+  }
+
+  return {
+    targetBytes,
+    audioKbps,
+    videoKbps,
+    tier,
+    maxWidth,
+    maxHeight,
+    fps: '30000/1001',
+    preset: videoKbps >= 1800 ? 'fast' : 'veryfast',
+  };
+}
+
+function statusVideoFilter(plan) {
   return [
-    `scale=w=${profile.width}:h=${profile.height}:force_original_aspect_ratio=decrease`,
-    `pad=${profile.width}:${profile.height}:(ow-iw)/2:(oh-ih)/2:color=black`,
-    'scale=trunc(iw/2)*2:trunc(ih/2)*2',
-    `fps=${profile.fps}`,
+    `scale=w=${plan.maxWidth}:h=${plan.maxHeight}:force_original_aspect_ratio=decrease:force_divisible_by=2:flags=lanczos`,
+    `fps=${plan.fps}`,
   ].join(',');
 }
 
-async function encodeStatusClip(inputPath, outputPath, startSeconds, durationSeconds, profile, rateProfile) {
+async function encodeSingleStatusFile(inputPath, outputPath, plan, bitrateScale = 1) {
   await rm(outputPath, { force: true }).catch(() => {});
+
+  const videoKbps = Math.max(160, Math.floor(plan.videoKbps * bitrateScale));
+  const maxRate = Math.max(videoKbps, Math.floor(videoKbps * 1.18));
+  const buffer = Math.max(maxRate * 2, 1000);
 
   const args = [
     '-y',
-    '-ss', String(startSeconds),
-    '-t', String(durationSeconds),
     '-i', inputPath,
     '-map', '0:v:0',
     '-map', '0:a:0?',
-    '-vf', statusVideoFilter(profile),
+    '-vf', statusVideoFilter(plan),
     '-c:v', 'libx264',
-    '-preset', profile.preset,
+    '-preset', plan.preset,
     '-pix_fmt', 'yuv420p',
-    '-color_range', 'tv',
-    '-color_primaries', 'bt470bg',
-    '-color_trc', 'bt709',
-    '-colorspace', 'bt470bg',
-    '-crf', String(rateProfile.crf),
-    '-maxrate', `${rateProfile.maxRateKbps}k`,
-    '-bufsize', `${rateProfile.bufferKbps}k`,
-    '-g', '250',
+    '-b:v', `${videoKbps}k`,
+    '-maxrate', `${maxRate}k`,
+    '-bufsize', `${buffer}k`,
     '-profile:v', 'high',
     '-level:v', '4.0',
-    '-x264-params', 'sei=0',
     '-c:a', 'aac',
-    '-ar', String(profile.sampleRate),
+    '-ar', '44100',
     '-ac', '2',
-    '-b:a', `${profile.audioKbps}k`,
+    '-b:a', `${plan.audioKbps}k`,
     '-brand', 'isom',
     '-movflags', '+faststart',
     '-map_metadata', '-1',
@@ -275,7 +262,7 @@ async function encodeStatusClip(inputPath, outputPath, startSeconds, durationSec
   await execFileAsync(
     ffmpegPath,
     args,
-    commandOptions(Number(process.env.STATUS_ENCODE_TIMEOUT_MS || 90000)),
+    commandOptions(Number(process.env.STATUS_ENCODE_TIMEOUT_MS || 240000)),
   );
 
   const fileStat = await stat(outputPath);
@@ -284,45 +271,11 @@ async function encodeStatusClip(inputPath, outputPath, startSeconds, durationSec
     err.code = 'STATUS_OUTPUT_MISSING';
     throw err;
   }
-  return fileStat.size;
-}
 
-async function encodeClipWithRetries(
-  inputPath,
-  outputBase,
-  index,
-  startSeconds,
-  durationSeconds,
-  allPaths,
-  profile,
-) {
-  let lastPath = '';
-  let lastSize = 0;
-
-  for (let attempt = 0; attempt < profile.retries.length; attempt += 1) {
-    const outputPath = `${outputBase}-part-${String(index + 1).padStart(2, '0')}-a${attempt + 1}.mp4`;
-    allPaths.push(outputPath);
-    lastPath = outputPath;
-    lastSize = await encodeStatusClip(
-      inputPath,
-      outputPath,
-      startSeconds,
-      durationSeconds,
-      profile,
-      profile.retries[attempt],
-    );
-
-    if (lastSize <= profile.sizeLimitBytes) {
-      return { filePath: outputPath, size: lastSize, attempt: attempt + 1 };
-    }
-
-    await rm(outputPath, { force: true }).catch(() => {});
-  }
-
-  const err = new Error(`Status HQ clip still exceeds target size (${lastSize} bytes).`);
-  err.code = 'STATUS_CLIP_TOO_LARGE';
-  err.filePath = lastPath;
-  throw err;
+  return {
+    size: fileStat.size,
+    videoKbps,
+  };
 }
 
 async function cleanup(paths) {
@@ -346,56 +299,44 @@ export async function prepareWhatsAppStatusHQ({ sourceUrl, platform, video }) {
     }
 
     const probe = await probeLocalVideo(inputPath);
-    const choice = chooseProfile(probe.duration);
-    const { profile, clipCount, maxClips } = choice;
+    const plan = chooseEncodePlan(probe);
+    const safeLimit = Math.floor(configuredUploadLimitBytes() * 0.94);
+    const attempts = [1, 0.84, 0.7];
+    let encoded = null;
+    let outputPath = '';
+    let usedAttempt = 0;
 
-    if (clipCount > maxClips) {
-      const err = new Error(
-        `Video terlalu panjang untuk satu proses Status HQ. Mode Long sudah aktif (${profile.width}×${profile.height}, ${profile.clipSeconds}s/part) tetapi masih perlukan ${clipCount} bahagian. Had selamat semasa ialah ${maxClips} bahagian.`,
-      );
-      err.code = 'STATUS_TOO_MANY_CLIPS';
-      err.clipCount = clipCount;
-      err.maxClips = maxClips;
-      err.profile = profile.mode;
+    for (let index = 0; index < attempts.length; index += 1) {
+      outputPath = `${base}-status-a${index + 1}.mp4`;
+      allPaths.push(outputPath);
+      encoded = await encodeSingleStatusFile(inputPath, outputPath, plan, attempts[index]);
+      usedAttempt = index + 1;
+      if (encoded.size <= safeLimit) break;
+      await rm(outputPath, { force: true }).catch(() => {});
+    }
+
+    if (!encoded || encoded.size > safeLimit) {
+      const err = new Error(`Status HQ single-file output masih melebihi had Telegram (${encoded?.size || 0} bytes).`);
+      err.code = 'STATUS_FILE_TOO_LARGE';
       throw err;
-    }
-
-    if (choice.switchedForLength) {
-      console.info(
-        `Status HQ auto-switched from ${choice.standardCount} x 29s parts to ` +
-        `${clipCount} x 59s parts at 720x1280.`,
-      );
-    }
-
-    const clips = [];
-    for (let index = 0; index < clipCount; index += 1) {
-      const startSeconds = index * profile.clipSeconds;
-      const durationSeconds = Math.min(profile.clipSeconds, probe.duration - startSeconds);
-      const encoded = await encodeClipWithRetries(
-        inputPath,
-        base,
-        index,
-        startSeconds,
-        durationSeconds,
-        allPaths,
-        profile,
-      );
-      clips.push({
-        ...encoded,
-        index: index + 1,
-        count: clipCount,
-        duration: durationSeconds,
-      });
     }
 
     await rm(inputPath, { force: true }).catch(() => {});
 
     return {
-      clips,
+      filePath: outputPath,
+      size: encoded.size,
       source: probe,
-      quality: `Status HQ • ${profile.width}×${profile.height} • H.264/AAC • ${profile.clipSeconds}s max/part`,
-      profile,
-      switchedForLength: choice.switchedForLength,
+      profile: {
+        mode: 'single',
+        tier: plan.tier,
+        maxWidth: plan.maxWidth,
+        maxHeight: plan.maxHeight,
+        videoKbps: encoded.videoKbps,
+        audioKbps: plan.audioKbps,
+      },
+      quality: `Status HQ • single file • ${plan.tier}p class • H.264/AAC • ratio asal`,
+      attempt: usedAttempt,
       cleanup: async () => cleanup(allPaths),
     };
   } catch (error) {
