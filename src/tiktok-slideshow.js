@@ -86,6 +86,24 @@ async function probeDuration(filePath) {
   return parseClockDuration(stderr.match(/Duration:\s*([^,]+)/i)?.[1] || '') || null;
 }
 
+async function probeImageSize(filePath) {
+  let stderr = '';
+  try {
+    await execFileAsync(ffmpegPath, ['-hide_banner', '-i', filePath], {
+      timeout: Number(process.env.MEDIA_PROBE_TIMEOUT_MS || 8000),
+      maxBuffer: 4 * 1024 * 1024,
+    });
+  } catch (error) {
+    stderr = String(error?.stderr || error?.message || '');
+  }
+
+  const matches = [...stderr.matchAll(/\b(\d{2,5})x(\d{2,5})\b/g)]
+    .map((match) => ({ width: Number(match[1]), height: Number(match[2]) }))
+    .filter((item) => item.width >= 64 && item.height >= 64);
+
+  return matches[0] || null;
+}
+
 async function cleanup(paths) {
   await Promise.all(paths.map((filePath) => rm(filePath, { force: true }).catch(() => {})));
 }
@@ -158,14 +176,13 @@ export async function prepareTikTokSound(audio) {
     await import('node:fs/promises').then(({ rename }) => rename(tempPath, finalPath));
     paths.push(finalPath);
 
-    const baseName = audio.performer
-      ? `${cleanName(audio.title)} - ${cleanName(audio.performer)}`
-      : cleanName(audio.title);
-
+    // Keep the downloadable filename identical to the TikTok sound title.
+    // Performer/creator is sent separately as Telegram audio metadata.
+    const soundTitle = cleanName(audio.title);
     return {
       filePath: finalPath,
-      fileName: `${baseName}.${ext}`,
-      title: cleanName(audio.title),
+      fileName: `${soundTitle}.${ext}`,
+      title: soundTitle,
       performer: cleanName(audio.performer || '', ''),
       cleanup: async () => cleanup(paths),
     };
@@ -175,19 +192,46 @@ export async function prepareTikTokSound(audio) {
   }
 }
 
-function videoPlan(durationSeconds, maxBytes, safety = 0.76) {
+function even(value) {
+  const rounded = Math.max(2, Math.round(Number(value || 2)));
+  return rounded % 2 === 0 ? rounded : rounded - 1;
+}
+
+function canvasFromSource(source, maxDimension) {
+  const sourceWidth = Number(source?.width || 0);
+  const sourceHeight = Number(source?.height || 0);
+  if (!sourceWidth || !sourceHeight) return { width: 1080, height: 1920 };
+
+  const sourceMax = Math.max(sourceWidth, sourceHeight);
+  const targetMax = Math.min(sourceMax, maxDimension);
+  const scale = targetMax / sourceMax;
+  return {
+    width: even(sourceWidth * scale),
+    height: even(sourceHeight * scale),
+  };
+}
+
+function videoPlan(durationSeconds, maxBytes, source, safety = 0.76) {
   const duration = Math.max(1, Number(durationSeconds || 1));
   const targetBytes = Math.floor(Number(maxBytes) * safety);
   const audioKbps = 128;
   const totalKbps = Math.floor((targetBytes * 8) / duration / 1000);
-  const videoKbps = Math.max(350, Math.min(1800, totalKbps - audioKbps - 32));
+  const videoKbps = Math.max(350, Math.min(2200, totalKbps - audioKbps - 32));
 
-  if (videoKbps >= 1300) return { width: 1080, height: 1920, videoKbps, audioKbps, targetBytes };
-  if (videoKbps >= 700) return { width: 720, height: 1280, videoKbps, audioKbps, targetBytes };
-  return { width: 540, height: 960, videoKbps, audioKbps: 96, targetBytes };
+  const maxDimension = videoKbps >= 1300 ? 1080 : videoKbps >= 700 ? 720 : 540;
+  const canvas = canvasFromSource(source, maxDimension);
+  return {
+    ...canvas,
+    videoKbps,
+    audioKbps: videoKbps >= 700 ? 128 : 96,
+    targetBytes,
+  };
 }
 
 async function renderSlideshow(listPath, audioPath, outputPath, duration, plan) {
+  // Never stretch. Every slide is fitted inside a canvas that has the same
+  // aspect ratio as the source TikTok slideshow, then padded only if a slide
+  // itself has a different ratio.
   const filter = [
     `scale=${plan.width}:${plan.height}:force_original_aspect_ratio=decrease:flags=lanczos`,
     `pad=${plan.width}:${plan.height}:(ow-iw)/2:(oh-ih)/2:color=black`,
@@ -245,7 +289,10 @@ export async function prepareTikTokSlideshowVideo(slideshow, maxBytes) {
     await Promise.all(slideshow.images.map((image, index) => download(image.url, imagePaths[index])));
     await download(slideshow.audio.url, audioPath);
 
-    const probedDuration = await probeDuration(audioPath);
+    const [probedDuration, sourceSize] = await Promise.all([
+      probeDuration(audioPath),
+      probeImageSize(imagePaths[0]),
+    ]);
     const duration = Math.max(1, Number(probedDuration || slideshow.duration || slideshow.images.length * 3));
     const secondsPerImage = duration / slideshow.images.length;
     const lines = [];
@@ -256,16 +303,17 @@ export async function prepareTikTokSlideshowVideo(slideshow, maxBytes) {
     lines.push(`file '${imagePaths.at(-1).replaceAll("'", "'\\''")}'`);
     await writeFile(listPath, `${lines.join('\n')}\n`, 'utf8');
 
-    let plan = videoPlan(duration, limit, 0.76);
+    let plan = videoPlan(duration, limit, sourceSize, 0.76);
     let result = await renderSlideshow(listPath, audioPath, outputPath, duration, plan);
 
     if (result.size > limit) {
-      plan = videoPlan(duration, limit, 0.58);
+      plan = videoPlan(duration, limit, sourceSize, 0.58);
       result = await renderSlideshow(listPath, audioPath, retryPath, duration, plan);
       await rm(outputPath, { force: true }).catch(() => {});
     }
 
-    const finalPath = result.size > limit ? null : (await stat(retryPath).catch(() => null))?.size ? retryPath : outputPath;
+    const retryStat = await stat(retryPath).catch(() => null);
+    const finalPath = result.size > limit ? null : retryStat?.size ? retryPath : outputPath;
     if (!finalPath) {
       const err = new Error(`Rendered slideshow is still too large for Telegram (${result.size} bytes).`);
       err.code = 'SLIDESHOW_TOO_LARGE';
@@ -274,7 +322,7 @@ export async function prepareTikTokSlideshowVideo(slideshow, maxBytes) {
 
     return {
       filePath: finalPath,
-      quality: `${plan.width}x${plan.height} • ${slideshow.images.length} slides • original TikTok sound`,
+      quality: `${plan.width}x${plan.height} • ratio asal • ${slideshow.images.length} slides • original TikTok sound`,
       cleanup: async () => cleanup(allPaths),
     };
   } catch (error) {
