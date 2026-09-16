@@ -8,7 +8,7 @@ on:
 jobs:
   selftest:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 12
     steps:
       - name: Wait for Vercel deployment
         run: sleep 45
@@ -16,16 +16,20 @@ jobs:
       - name: Test downloader cases
         shell: bash
         run: |
-          set -euo pipefail
+          set -u
           BASE='https://bot-tele-tt-reels-thread-yt.vercel.app/api/diagnostic'
+          FAIL=0
           for CASE in tiktok reels youtube threads; do
             echo "=== $CASE ==="
             OUT=''
             for TRY in 1 2 3 4 5; do
-              OUT=$(curl -fsS --max-time 60 "$BASE?case=$CASE" || true)
+              OUT=$(curl -fsS --max-time 70 "$BASE?case=$CASE" || true)
               echo "try=$TRY $OUT"
               if echo "$OUT" | grep -q '"case"'; then break; fi
               sleep 15
             done
-            echo "$OUT" | grep -q '"ok":true' || exit 1
+            if ! echo "$OUT" | grep -q '"ok":true'; then
+              FAIL=1
+            fi
           done
+          exit $FAIL
