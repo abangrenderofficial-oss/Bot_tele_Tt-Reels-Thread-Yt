@@ -1,5 +1,5 @@
 import { createWriteStream } from 'node:fs';
-import { rm, stat } from 'node:fs/promises';
+import { chmod, rm, stat } from 'node:fs/promises';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { execFile } from 'node:child_process';
@@ -15,7 +15,10 @@ function commandOptions(timeoutMs) {
   return {
     timeout: timeoutMs,
     maxBuffer: 8 * 1024 * 1024,
-    env: { ...process.env },
+    env: {
+      ...process.env,
+      PATH: `${path.dirname(process.execPath)}:${process.env.PATH || ''}`,
+    },
   };
 }
 
@@ -64,6 +67,49 @@ async function downloadToFile(item, filePath) {
   return { filePath, size: fileStat.size };
 }
 
+async function downloadSourceWithYtDlp(sourceUrl, outputBase) {
+  if (!sourceUrl) {
+    const err = new Error('Original social post URL is missing.');
+    err.code = 'SOCIAL_SOURCE_URL_MISSING';
+    throw err;
+  }
+
+  const binary = path.join(process.cwd(), 'bin', 'yt-dlp');
+  await chmod(binary, 0o755).catch(() => {});
+
+  const outputTemplate = `${outputBase}.%(ext)s`;
+  const args = [
+    '--no-playlist',
+    '--no-warnings',
+    '--no-check-certificates',
+    '--js-runtimes', `node:${process.execPath}`,
+    '--remote-components', 'ejs:github',
+    '--format', 'best[height<=1080]/best',
+    '--merge-output-format', 'mp4',
+    '--ffmpeg-location', ffmpegPath,
+    '--no-progress',
+    '--output', outputTemplate,
+    '--print', 'after_move:filepath',
+    '--',
+    sourceUrl,
+  ];
+
+  const { stdout } = await execFileAsync(binary, args, commandOptions(Number(process.env.SOCIAL_YTDLP_TIMEOUT_MS || 120000)));
+  const reported = String(stdout || '').split(/\r?\n/).map((line) => line.trim()).filter(Boolean).at(-1);
+  const candidates = [reported, `${outputBase}.mp4`, `${outputBase}.mkv`, `${outputBase}.webm`, `${outputBase}.mov`].filter(Boolean);
+
+  for (const candidate of candidates) {
+    try {
+      const fileStat = await stat(candidate);
+      if (fileStat.isFile() && fileStat.size) return { filePath: candidate, size: fileStat.size };
+    } catch {}
+  }
+
+  const err = new Error('yt-dlp did not produce a social video file.');
+  err.code = 'SOCIAL_YTDLP_OUTPUT_MISSING';
+  throw err;
+}
+
 function parseClockDuration(value) {
   const match = String(value || '').match(/(\d+):(\d{2}):(\d{2}(?:\.\d+)?)/);
   if (!match) return 0;
@@ -100,7 +146,6 @@ function compressionPlan(durationSeconds, maxBytes, source, safety = 0.82) {
   const totalKbps = Math.floor((targetBytes * 8) / duration / 1000);
   const videoKbps = totalKbps - audioKbps - 32;
 
-  // If the bitrate would be lower than this, do not pretend the result is HQ.
   if (!Number.isFinite(videoKbps) || videoKbps < 550) return null;
 
   let desiredDimension;
@@ -165,7 +210,7 @@ async function compressVideo(inputPath, outputPath, plan) {
 }
 
 async function cleanup(paths) {
-  await Promise.all(paths.map((filePath) => rm(filePath, { force: true }).catch(() => {})));
+  await Promise.all([...new Set(paths)].map((filePath) => rm(filePath, { force: true }).catch(() => {})));
 }
 
 export async function prepareSocialVideoTelegramUpload(item, maxBytes, options = {}) {
@@ -175,13 +220,24 @@ export async function prepareSocialVideoTelegramUpload(item, maxBytes, options =
 
   const attemptId = randomUUID();
   const base = path.join(tmpdir(), `ar-social-${attemptId}`);
-  const inputPath = `${base}.${safeExtension(item)}`;
+  let inputPath = `${base}.${safeExtension(item)}`;
   const compressedPath = `${base}-compressed.mp4`;
   const retryPath = `${base}-compressed-retry.mp4`;
   const allPaths = [inputPath, compressedPath, retryPath];
 
   try {
-    const downloaded = await downloadToFile(item, inputPath);
+    let downloaded;
+    try {
+      downloaded = await downloadToFile(item, inputPath);
+    } catch (directError) {
+      if (!options.sourceUrl) throw directError;
+      console.warn('Direct social media fetch failed; falling back to yt-dlp:', directError?.code, directError?.message);
+      await rm(inputPath, { force: true }).catch(() => {});
+      downloaded = await downloadSourceWithYtDlp(options.sourceUrl, `${base}-ytdlp`);
+      inputPath = downloaded.filePath;
+      allPaths.push(inputPath);
+    }
+
     if (downloaded.size <= limit) {
       return {
         ...downloaded,
@@ -207,8 +263,6 @@ export async function prepareSocialVideoTelegramUpload(item, maxBytes, options =
 
     let compressed = await compressVideo(inputPath, compressedPath, plan);
 
-    // One-pass encoding can vary slightly. If it overshoots, retry once with
-    // more headroom rather than distorting the frame or changing aspect ratio.
     if (compressed.size > limit) {
       plan = compressionPlan(duration, limit, probe, 0.70);
       if (!plan) {
