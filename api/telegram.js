@@ -3,6 +3,7 @@ import { parseThreadsPost } from '../src/threads.js';
 import { parseTwitterVideo } from '../src/twitter.js';
 import { prepareSocialVideoTelegramUpload } from '../src/social-video.js';
 import { prepareYouTubeTelegramUpload } from '../src/youtube-upload.js';
+import { prepareWhatsAppStatusHQ } from '../src/status-hq.js';
 import {
   prepareTikTokSlideshowVideo,
   prepareTikTokSound,
@@ -41,6 +42,10 @@ const START_TEXT = [
   'YouTube: bot support video public dan unlisted yang boleh dibuka menggunakan link. Bot utamakan 1080p, kemudian 720p, kemudian 480p. Jika video dan audio berasingan, bot akan merge dahulu sebelum hantar ke Telegram.',
   'TikTok video: bot hantar video seperti biasa. TikTok photo/slideshow: bot akan beri pilihan Split (Image + Audio) atau Video.',
   'TikTok / Instagram / Threads / X: jika video melebihi had Telegram, bot akan cuba compress HQ dahulu sambil mengekalkan aspect ratio asal.',
+  '',
+  '📱 WhatsApp Status HQ test:',
+  'Hantar /status <link> untuk bina versi khas 1080×1920 H.264/AAC. Video dibahagi maksimum 29 saat setiap part, ratio asal dikekalkan dengan padding dan setiap part ditarget bawah ±15.5 MB.',
+  'Selepas terima: Save video → hantar ke chat sendiri dalam WhatsApp dengan HD → Forward copy baru itu ke My Status. Jangan trim/edit lagi dalam WhatsApp.',
   '',
   'Bot akan cuba hantar media terus dalam chat. Untuk CDN yang perlukan header khas, bot akan relay media melalui server sendiri dan cuba upload terus ke Telegram.',
   '',
@@ -353,26 +358,115 @@ async function processTikTokSlideshowChoice(callbackQuery, baseUrl) {
   }
 }
 
+async function resolveStatusMedia(platform, url) {
+  if (platform === 'youtube') {
+    try {
+      return await parseMedia(url);
+    } catch {
+      return emptyYouTubeMedia();
+    }
+  }
+  if (platform === 'threads') return parseThreadsPost(url);
+  if (platform === 'twitter') return parseTwitterVideo(url);
+  return parseMedia(url);
+}
+
+async function processStatusMessage(chatId, url, platform) {
+  let prepared = null;
+  try {
+    await sendMessage(
+      chatId,
+      '📱 Status HQ sedang disediakan…\nProfile test: 1080×1920, H.264/AAC, maksimum 29 saat setiap part, ratio asal dikekalkan tanpa stretch.',
+    );
+    await sendChatAction(chatId, 'upload_video').catch(() => {});
+
+    const media = await resolveStatusMedia(platform, url);
+    if (platform === 'tiktok' && Array.isArray(media.images) && media.images.length && !media.videos?.length) {
+      await sendMessage(chatId, '❌ Status HQ sekarang fokus pada video. TikTok slideshow/photo belum disokong untuk mode ini.');
+      return;
+    }
+
+    const best = platform === 'youtube' ? null : chooseBestVideo(media.videos || []);
+    if (platform !== 'youtube' && !best) {
+      await sendMessage(chatId, '❌ Tak jumpa video yang sesuai untuk dibina sebagai Status HQ.');
+      return;
+    }
+
+    prepared = await prepareWhatsAppStatusHQ({
+      sourceUrl: url,
+      platform,
+      video: best,
+    });
+
+    for (const clip of prepared.clips) {
+      await sendChatAction(chatId, 'upload_video').catch(() => {});
+      const caption = [
+        `📱 Status HQ • ${platformLabel(platform)}`,
+        `Part ${clip.index}/${clip.count}`,
+        '1080×1920 • H.264/AAC • ratio asal',
+      ].join('\n');
+      await sendVideoFileUpload(chatId, clip.filePath, caption);
+    }
+
+    await sendMessage(
+      chatId,
+      [
+        '✅ Status HQ siap.',
+        '',
+        'Cara test yang paling penting:',
+        '1. Save part daripada Telegram ke phone.',
+        '2. Buka WhatsApp dan hantar file itu ke chat sendiri melalui Gallery.',
+        '3. Pilih HD quality sebelum send.',
+        '4. Pada copy baru dalam chat itu, pilih Forward → My Status.',
+        '5. Jangan trim/edit lagi dalam WhatsApp.',
+        '',
+        'WhatsApp masih boleh recompress mengikut device/app version, jadi compare hasil ini dengan upload biasa.',
+      ].join('\n'),
+    );
+  } catch (error) {
+    console.error('Status HQ failed:', error?.code, error?.message);
+    if (error?.code === 'STATUS_TOO_MANY_CLIPS') {
+      await sendMessage(chatId, `❌ ${error.message}`).catch(() => {});
+    } else {
+      await sendMessage(chatId, '❌ Status HQ tak dapat disiapkan untuk link ini. Cuba video lebih pendek atau cuba semula kemudian.').catch(() => {});
+    }
+  } finally {
+    if (prepared?.cleanup) await prepared.cleanup().catch(() => {});
+  }
+}
+
 async function processMessage(message, baseUrl) {
   const chatId = message?.chat?.id;
   const text = message?.text || message?.caption || '';
   if (!chatId) return;
 
-  const command = text.trim().split(/\s+/)[0]?.toLowerCase();
+  const commandToken = text.trim().split(/\s+/)[0]?.toLowerCase() || '';
+  const command = commandToken.split('@')[0];
   if (command === '/start' || command === '/help') {
     await sendMessage(chatId, START_TEXT);
     return;
   }
 
+  const statusMode = command === '/status' || command === 'status';
   const url = extractFirstUrl(text);
   if (!url) {
-    await sendMessage(chatId, 'Hantar satu link TikTok, Instagram, Threads, X/Twitter atau YouTube.');
+    await sendMessage(
+      chatId,
+      statusMode
+        ? 'Guna format: /status <link video>'
+        : 'Hantar satu link TikTok, Instagram, Threads, X/Twitter atau YouTube.',
+    );
     return;
   }
 
   const platform = detectPlatform(url);
   if (!platform) {
     await sendMessage(chatId, 'Link ni belum disokong. Buat masa sekarang: TikTok, Instagram, Threads, X/Twitter dan YouTube.');
+    return;
+  }
+
+  if (statusMode) {
+    await processStatusMessage(chatId, url, platform);
     return;
   }
 
