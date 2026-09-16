@@ -69,32 +69,88 @@ async function trySlbjs(inputUrl) {
   return videoMedia(direct, data);
 }
 
+function shortSnippet(text, index, radius = 220) {
+  if (index < 0) return '';
+  return text.slice(Math.max(0, index - radius), Math.min(text.length, index + radius)).replace(/\s+/g, ' ');
+}
+
 async function trySsstik(inputUrl) {
-  const home = await fetch('https://ssstik.io/', {
-    headers: { 'User-Agent': browserUA, Accept: 'text/html,*/*' },
+  const homeUrl = 'https://ssstik.io/en-1';
+  const home = await fetch(homeUrl, {
+    headers: {
+      'User-Agent': browserUA,
+      Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+      'Accept-Language': 'en-US,en;q=0.9',
+    },
     redirect: 'follow', signal: AbortSignal.timeout(30000),
   });
   const html = await home.text();
-  console.log('ssstik-home', home.status, 'bytes', html.length);
+  const setCookies = typeof home.headers.getSetCookie === 'function' ? home.headers.getSetCookie() : [];
+  console.log('ssstik-home', home.status, home.url, 'bytes', html.length, 'cookies', setCookies.length);
   if (!home.ok) throw new Error(`SSSTik home HTTP ${home.status}`);
-  const token = html.match(/tt:\s*['\"]([\w\d]+)['\"]/i)?.[1];
+
+  const probes = ['abc?url=dl', 'hx-post', 'hx-trigger', 'tt:', 'tt=', 'name="tt"', "name='tt'", 'locale'];
+  for (const probe of probes) {
+    const idx = html.toLowerCase().indexOf(probe.toLowerCase());
+    if (idx >= 0) console.log('ssstik-probe', probe, shortSnippet(html, idx));
+  }
+  const inputTags = [...html.matchAll(/<input\b[^>]{0,600}>/gi)].map((m) => m[0]);
+  console.log('ssstik-inputs', inputTags.slice(0, 20).map((v) => v.replace(/\s+/g, ' ')).join(' || '));
+  const scriptSrcs = [...html.matchAll(/<script\b[^>]*\bsrc=["']([^"']+)["'][^>]*>/gi)].map((m) => absoluteUrl(m[1], homeUrl));
+  console.log('ssstik-script-srcs', scriptSrcs.slice(0, 20).join(' | '));
+
+  let token =
+    html.match(/\btt\s*:\s*['\"]([^'\"]+)['\"]/i)?.[1] ||
+    html.match(/\btt\s*=\s*['\"]([^'\"]+)['\"]/i)?.[1] ||
+    html.match(/name=["']tt["'][^>]*value=["']([^"']+)["']/i)?.[1] ||
+    html.match(/value=["']([^"']+)["'][^>]*name=["']tt["']/i)?.[1] || '';
+
+  if (!token) {
+    for (const src of scriptSrcs.slice(-8)) {
+      try {
+        const jsRes = await fetch(src, {
+          headers: { 'User-Agent': browserUA, Accept: '*/*', Referer: homeUrl },
+          signal: AbortSignal.timeout(20000),
+        });
+        const js = await jsRes.text();
+        const hasNeedle = /\btt\b|abc\?url=dl|_gcaptcha_pt/i.test(js);
+        console.log('ssstik-js', src, jsRes.status, 'bytes', js.length, 'interesting', hasNeedle);
+        if (hasNeedle) {
+          for (const probe of ['abc?url=dl', '_gcaptcha_pt', 'tt:', 'tt=']) {
+            const idx = js.toLowerCase().indexOf(probe.toLowerCase());
+            if (idx >= 0) console.log('ssstik-js-probe', probe, shortSnippet(js, idx, 300));
+          }
+        }
+        token =
+          js.match(/\btt\s*:\s*['\"]([^'\"]+)['\"]/i)?.[1] ||
+          js.match(/\btt\s*=\s*['\"]([^'\"]+)['\"]/i)?.[1] || token;
+        if (token) break;
+      } catch (error) {
+        console.log('ssstik-js-failed', src, error?.message || error);
+      }
+    }
+  }
   if (!token) throw new Error('SSSTik token not found');
+  console.log('ssstik-token-found', token.length);
+
+  const cookieHeader = setCookies.map((v) => String(v).split(';', 1)[0]).filter(Boolean).join('; ');
   const body = new URLSearchParams({ id: inputUrl, locale: 'en', tt: token });
   const response = await fetch('https://ssstik.io/abc?url=dl', {
     method: 'POST',
     headers: {
       'User-Agent': browserUA, Accept: '*/*', 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-      'hx-current-url': 'https://ssstik.io/en-1', 'hx-request': 'true', 'hx-target': 'target',
-      'hx-trigger': '_gcaptcha_pt', Origin: 'https://ssstik.io', Referer: 'https://ssstik.io/en-1',
+      'hx-current-url': homeUrl, 'hx-request': 'true', 'hx-target': 'target',
+      'hx-trigger': '_gcaptcha_pt', Origin: 'https://ssstik.io', Referer: homeUrl,
+      ...(cookieHeader ? { Cookie: cookieHeader } : {}),
     },
     body, redirect: 'follow', signal: AbortSignal.timeout(45000),
   });
   const text = await response.text();
-  console.log('ssstik-post', response.status, 'bytes', text.length, 'head', text.slice(0, 220));
+  console.log('ssstik-post', response.status, 'bytes', text.length, 'head', text.slice(0, 400).replace(/\s+/g, ' '));
   if (!response.ok) throw new Error(`SSSTik HTTP ${response.status}`);
   const hrefs = [...text.matchAll(/href=["']([^"']+)["']/gi)].map((m) => m[1]);
   const direct = hrefs.find((v) => /^https?:\/\//i.test(v) && /\.mp4|video|ssscdn|tikcdn|tiktokcdn/i.test(v)) || '';
-  if (!direct) throw new Error(`SSSTik no video URL; hrefs=${hrefs.slice(0, 6).join(',')}`);
+  if (!direct) throw new Error(`SSSTik no video URL; hrefs=${hrefs.slice(0, 8).join(',')}`);
   return videoMedia(direct, { title: 'TikTok' }, { Referer: 'https://ssstik.io/' });
 }
 
