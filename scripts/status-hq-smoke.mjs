@@ -10,9 +10,52 @@ const url = process.env.STATUS_TEST_URL || 'https://vt.tiktok.com/ZSgbsv3MX';
 const browserUA = 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_6 like Mac OS X) AppleWebKit/605.1.15 Version/18.0 Mobile/15E148 Safari/604.1';
 console.log('STATUS_TEST_URL', url);
 
-function absoluteTikwm(value, base = 'https://www.tikwm.com') {
+function absoluteUrl(value, base = 'https://www.tikwm.com') {
   if (!value) return '';
   try { return new URL(value, base).toString(); } catch { return ''; }
+}
+
+function normalizeSlbjs(payload) {
+  const data = payload?.data && typeof payload.data === 'object' ? payload.data : payload;
+  const direct = data?.download_url || data?.downloadUrl || data?.video_url || data?.videoUrl || data?.url || '';
+  if (!/^https?:\/\//i.test(String(direct))) return null;
+  const duration = Number(data?.duration || data?.author?.duration || data?.video?.duration || 0) || null;
+  return {
+    platform: 'TikTok',
+    title: String(data?.title || ''),
+    duration,
+    videos: [{
+      url: String(direct),
+      quality: 'HD',
+      width: Number(data?.width || 0) || null,
+      height: Number(data?.height || 0) || null,
+      ext: 'mp4',
+      hasAudio: true,
+      source: 'direct',
+      headers: { 'User-Agent': browserUA },
+      filesize: null,
+    }],
+    images: [],
+    audios: [],
+  };
+}
+
+async function trySlbjs(inputUrl) {
+  const endpoint = new URL('https://tdownv4.sl-bjs.workers.dev/');
+  endpoint.searchParams.set('down', inputUrl);
+  const response = await fetch(endpoint, {
+    headers: { 'User-Agent': browserUA, Accept: 'application/json, text/plain, */*' },
+    redirect: 'follow',
+    signal: AbortSignal.timeout(45000),
+  });
+  const text = await response.text();
+  console.log('slbjs status', response.status, 'bytes', text.length, 'head', text.slice(0, 300));
+  if (!response.ok) throw new Error(`Slbjs HTTP ${response.status}`);
+  let payload;
+  try { payload = JSON.parse(text); } catch { throw new Error('Slbjs invalid JSON'); }
+  const media = normalizeSlbjs(payload);
+  if (!media) throw new Error(`Slbjs no video URL: ${text.slice(0, 500)}`);
+  return media;
 }
 
 async function tryTikwmPost(inputUrl) {
@@ -39,32 +82,17 @@ async function tryTikwmPost(inputUrl) {
       const payload = JSON.parse(text);
       if (payload?.code !== 0 || !payload?.data) { failures.push(`${endpoint}:code=${payload?.code}`); continue; }
       const data = payload.data;
-      const direct = absoluteTikwm(data.hdplay || data.play);
+      const direct = absoluteUrl(data.hdplay || data.play);
       if (!direct) { failures.push(`${endpoint}:no-video`); continue; }
       return {
-        platform: 'TikTok',
-        title: data.title || '',
-        duration: Number(data.duration || 0) || null,
+        platform: 'TikTok', title: data.title || '', duration: Number(data.duration || 0) || null,
         videos: [{
-          url: direct,
-          quality: data.hdplay ? 'HD' : 'No watermark',
-          width: data.width ?? null,
-          height: data.height ?? null,
-          ext: 'mp4',
-          hasAudio: true,
-          source: 'direct',
-          headers: {
-            'User-Agent': browserUA,
-            Referer: 'https://www.tikwm.com/',
-          },
-          filesize: null,
-        }],
-        images: [],
-        audios: [],
+          url: direct, quality: data.hdplay ? 'HD' : 'No watermark', width: data.width ?? null,
+          height: data.height ?? null, ext: 'mp4', hasAudio: true, source: 'direct',
+          headers: { 'User-Agent': browserUA, Referer: 'https://www.tikwm.com/' }, filesize: null,
+        }], images: [], audios: [],
       };
-    } catch (error) {
-      failures.push(`${endpoint}:${error?.message || error}`);
-    }
+    } catch (error) { failures.push(`${endpoint}:${error?.message || error}`); }
   }
   throw new Error(`TikWM POST failed: ${failures.join(', ')}`);
 }
@@ -92,9 +120,7 @@ try {
   const redirect = await fetch(url, { method: 'GET', redirect: 'follow', headers: { 'User-Agent': browserUA }, signal: AbortSignal.timeout(20000) });
   console.log('shortlink redirect', redirect.status, redirect.url);
   await redirect.body?.cancel().catch(() => {});
-} catch (error) {
-  console.log('shortlink redirect failed', error?.message || error);
-}
+} catch (error) { console.log('shortlink redirect failed', error?.message || error); }
 
 await tryYtDlp(url);
 
@@ -104,8 +130,14 @@ try {
   console.log('parseMedia provider ok');
 } catch (error) {
   console.log('parseMedia failed', error?.code, error?.message);
-  media = await tryTikwmPost(url);
-  console.log('TikWM POST fallback ok');
+  try {
+    media = await trySlbjs(url);
+    console.log('Slbjs fallback ok');
+  } catch (slbError) {
+    console.log('Slbjs failed', slbError?.message || slbError);
+    media = await tryTikwmPost(url);
+    console.log('TikWM POST fallback ok');
+  }
 }
 
 console.log('platform', media?.platform, 'duration', media?.duration, 'videos', media?.videos?.length || 0);
@@ -117,9 +149,7 @@ let prepared;
 try {
   prepared = await prepareWhatsAppStatusHQ({ sourceUrl: url, platform: 'tiktok', video: best });
   console.log('prepared', prepared.quality, 'clips', prepared.clips.length, 'profile', prepared.profile?.mode);
-  for (const clip of prepared.clips) {
-    console.log('clip', clip.index, clip.count, clip.duration, clip.size, clip.filePath);
-  }
+  for (const clip of prepared.clips) console.log('clip', clip.index, clip.count, clip.duration, clip.size, clip.filePath);
 } finally {
   if (prepared?.cleanup) await prepared.cleanup();
 }
