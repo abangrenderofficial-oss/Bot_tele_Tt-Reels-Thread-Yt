@@ -1,69 +1,116 @@
-const DEFAULT_API_URL = 'https://api.easydown.org/api/v1/parse';
+import youtubedl from 'youtube-dl-exec';
 
-function timeoutSignal(ms = 20000) {
-  return AbortSignal.timeout(ms);
+function normalizeInfo(raw) {
+  if (!raw) return null;
+  if (typeof raw === 'string') {
+    try {
+      return JSON.parse(raw);
+    } catch {
+      return null;
+    }
+  }
+  return raw;
 }
 
-function normalizeMedia(payload) {
-  const root = payload?.data?.media ?? payload?.data ?? payload?.media ?? payload;
-  if (!root || typeof root !== 'object') {
-    throw new Error('Downloader returned an invalid response.');
+function qualityLabel(format = {}) {
+  if (format.height) return `${format.height}p`;
+  if (format.format_note) return String(format.format_note);
+  if (format.format) return String(format.format);
+  return 'video';
+}
+
+function hasAudio(format = {}) {
+  return format.acodec && format.acodec !== 'none';
+}
+
+function hasVideo(format = {}) {
+  return format.vcodec && format.vcodec !== 'none';
+}
+
+function usableVideoFormats(info = {}) {
+  const formats = Array.isArray(info.formats) ? info.formats : [];
+  const direct = formats
+    .filter((f) => f?.url && hasVideo(f) && hasAudio(f))
+    .map((f) => ({
+      url: f.url,
+      quality: qualityLabel(f),
+      width: f.width ?? null,
+      height: f.height ?? null,
+      ext: f.ext ?? null,
+      hasAudio: true,
+      source: 'direct',
+      headers: f.http_headers ?? info.http_headers ?? null,
+      filesize: f.filesize ?? f.filesize_approx ?? null,
+    }));
+
+  if (direct.length) return direct;
+
+  if (info.url) {
+    return [{
+      url: info.url,
+      quality: info.height ? `${info.height}p` : 'video',
+      width: info.width ?? null,
+      height: info.height ?? null,
+      ext: info.ext ?? null,
+      hasAudio: info.acodec !== 'none',
+      source: 'direct',
+      headers: info.http_headers ?? null,
+      filesize: info.filesize ?? info.filesize_approx ?? null,
+    }];
   }
 
-  return {
-    platform: root.platform ?? null,
-    title: root.title ?? payload?.data?.title ?? '',
-    thumbnail: root.thumbnail ?? payload?.data?.thumbnail ?? '',
-    duration: root.duration ?? payload?.data?.duration ?? null,
-    images: Array.isArray(root.images) ? root.images.filter((item) => item?.url) : [],
-    videos: Array.isArray(root.videos) ? root.videos.filter((item) => item?.url) : [],
-    audios: Array.isArray(root.audios) ? root.audios.filter((item) => item?.url) : [],
-  };
+  return [];
 }
 
 export async function parseMedia(url) {
-  const token = process.env.EASYDOWN_API_TOKEN;
-  if (!token) {
-    const err = new Error('Downloader API is not configured.');
-    err.code = 'DOWNLOADER_NOT_CONFIGURED';
+  if (/threads\.(net|com)/i.test(url)) {
+    const err = new Error('Threads needs a dedicated free extractor adapter.');
+    err.code = 'THREADS_ADAPTER_PENDING';
     throw err;
   }
 
-  const apiUrl = process.env.EASYDOWN_API_URL || DEFAULT_API_URL;
-  const response = await fetch(apiUrl, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${token}`,
-      'Content-Type': 'application/json',
-      Accept: 'application/json',
-    },
-    body: JSON.stringify({ url }),
-    signal: timeoutSignal(Number(process.env.DOWNLOADER_TIMEOUT_MS || 20000)),
-  });
-
-  let payload;
+  let raw;
   try {
-    payload = await response.json();
-  } catch {
-    throw new Error(`Downloader returned HTTP ${response.status} with non-JSON content.`);
-  }
-
-  if (!response.ok || payload?.status >= 400) {
-    const message = payload?.msg || payload?.message || payload?.detail || `Downloader error (${response.status}).`;
-    const err = new Error(String(message));
+    raw = await youtubedl(url, {
+      dumpSingleJson: true,
+      skipDownload: true,
+      noWarnings: true,
+      noPlaylist: true,
+      noCheckCertificates: true,
+      preferFreeFormats: true,
+    }, {
+      timeout: Number(process.env.DOWNLOADER_TIMEOUT_MS || 25000),
+      maxBuffer: 8 * 1024 * 1024,
+    });
+  } catch (error) {
+    const err = new Error(error?.stderr || error?.message || 'yt-dlp failed.');
     err.code = 'DOWNLOADER_ERROR';
-    err.status = response.status;
     throw err;
   }
 
-  const media = normalizeMedia(payload);
-  if (!media.images.length && !media.videos.length && !media.audios.length) {
-    const err = new Error('No downloadable media was found for this link.');
+  const info = normalizeInfo(raw);
+  if (!info) {
+    const err = new Error('yt-dlp returned invalid metadata.');
     err.code = 'NO_MEDIA';
     throw err;
   }
 
-  return media;
+  const videos = usableVideoFormats(info);
+  if (!videos.length) {
+    const err = new Error('No directly downloadable video format was found.');
+    err.code = 'NO_MEDIA';
+    throw err;
+  }
+
+  return {
+    platform: info.extractor_key ?? info.extractor ?? null,
+    title: info.title ?? '',
+    thumbnail: info.thumbnail ?? '',
+    duration: info.duration ?? null,
+    images: [],
+    videos,
+    audios: [],
+  };
 }
 
 function qualityScore(value = '') {
@@ -88,5 +135,11 @@ export function chooseBestVideo(videos = []) {
 }
 
 export function needsCustomHeaders(item) {
-  return !!item?.headers && Object.keys(item.headers).length > 0;
+  const headers = item?.headers && typeof item.headers === 'object' ? item.headers : null;
+  if (!headers) return false;
+  const keys = Object.keys(headers).filter((key) => {
+    const lower = key.toLowerCase();
+    return lower !== 'accept-language' && lower !== 'accept';
+  });
+  return keys.length > 0;
 }
