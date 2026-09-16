@@ -1,5 +1,9 @@
 import { execFile } from 'node:child_process';
-import { stat } from 'node:fs/promises';
+import { createReadStream } from 'node:fs';
+import { mkdtemp, rm, stat } from 'node:fs/promises';
+import { createServer } from 'node:http';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { promisify } from 'node:util';
 import ffmpegPath from 'ffmpeg-static';
 import { parseMedia, chooseBestVideo } from '../src/downloader.js';
@@ -39,7 +43,9 @@ async function parseWithRetry(url, label) {
       return media;
     } catch (error) {
       lastError = error;
-      console.log('PARSE_ATTEMPT_FAIL', label, attempt, error?.code, String(error?.message || error).slice(0, 500));
+      const text = String(error?.message || error);
+      console.log('PARSE_ATTEMPT_FAIL', label, attempt, error?.code, text.slice(0, 500));
+      if (/TikWM HTTP 403/i.test(text) && attempt >= 2) break;
       if (attempt < 6) await sleep(attempt * 2500);
     }
   }
@@ -69,6 +75,29 @@ function assertRatioPreserved(source, output) {
   if (diff > 0.02) throw new Error(`aspect ratio changed too much: ${diff}`);
 }
 
+async function verifyPrepared(prepared, label) {
+  if (!prepared?.filePath || !prepared?.size) throw new Error(`${label}: invalid single-file output`);
+
+  const fileStat = await stat(prepared.filePath);
+  if (!fileStat.isFile() || !fileStat.size) throw new Error(`${label}: generated output is empty`);
+  if (fileStat.size !== prepared.size) throw new Error(`${label}: output size metadata mismatch`);
+
+  const output = await probeDimensions(prepared.filePath);
+  assertRatioPreserved(prepared.source, output);
+
+  console.log(
+    'STATUS_HQ_OK',
+    label,
+    prepared.quality,
+    'single=true',
+    'bytes=', prepared.size,
+    'attempt=', prepared.attempt,
+    'source=', `${prepared.source?.width || '?'}x${prepared.source?.height || '?'}`,
+    'output=', `${output.width || '?'}x${output.height || '?'}`,
+    'videoKbps=', prepared.profile?.videoKbps,
+  );
+}
+
 async function runStatus(url, label) {
   console.log('RUN_STATUS', label, url);
   const media = await parseWithRetry(url, label);
@@ -80,38 +109,106 @@ async function runStatus(url, label) {
   let prepared;
   try {
     prepared = await prepareWhatsAppStatusHQ({ sourceUrl: url, platform: 'tiktok', video: best });
-    if (!prepared?.filePath || !prepared?.size) throw new Error(`${label}: invalid single-file output`);
-
-    const fileStat = await stat(prepared.filePath);
-    if (!fileStat.isFile() || !fileStat.size) throw new Error(`${label}: generated output is empty`);
-    if (fileStat.size !== prepared.size) throw new Error(`${label}: output size metadata mismatch`);
-
-    const output = await probeDimensions(prepared.filePath);
-    assertRatioPreserved(prepared.source, output);
-
-    console.log(
-      'STATUS_HQ_OK',
-      label,
-      prepared.quality,
-      'single=true',
-      'bytes=', prepared.size,
-      'attempt=', prepared.attempt,
-      'source=', `${prepared.source?.width || '?'}x${prepared.source?.height || '?'}`,
-      'output=', `${output.width || '?'}x${output.height || '?'}`,
-      'videoKbps=', prepared.profile?.videoKbps,
-    );
+    await verifyPrepared(prepared, label);
     return true;
   } finally {
     if (prepared?.cleanup) await prepared.cleanup();
   }
 }
 
+async function makeLocalFixture() {
+  const dir = await mkdtemp(path.join(tmpdir(), 'ar-status-smoke-'));
+  const filePath = path.join(dir, 'fixture.mp4');
+
+  await execFileAsync(
+    ffmpegPath,
+    [
+      '-y',
+      '-hide_banner',
+      '-loglevel', 'error',
+      '-f', 'lavfi',
+      '-i', 'color=c=0x202020:s=360x640:r=12:d=181',
+      '-f', 'lavfi',
+      '-i', 'sine=frequency=660:sample_rate=44100:duration=181',
+      '-c:v', 'libx264',
+      '-preset', 'ultrafast',
+      '-tune', 'zerolatency',
+      '-pix_fmt', 'yuv420p',
+      '-c:a', 'aac',
+      '-b:a', '64k',
+      '-shortest',
+      filePath,
+    ],
+    { timeout: 120000, maxBuffer: 8 * 1024 * 1024 },
+  );
+
+  const fileStat = await stat(filePath);
+  const server = createServer((req, res) => {
+    if (req.url !== '/fixture.mp4') {
+      res.statusCode = 404;
+      res.end('not found');
+      return;
+    }
+    res.statusCode = 200;
+    res.setHeader('Content-Type', 'video/mp4');
+    res.setHeader('Content-Length', String(fileStat.size));
+    createReadStream(filePath).pipe(res);
+  });
+
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+
+  const address = server.address();
+  const port = typeof address === 'object' && address ? address.port : 0;
+  if (!port) throw new Error('Local Status HQ fixture server did not start.');
+
+  return {
+    url: `http://127.0.0.1:${port}/fixture.mp4`,
+    cleanup: async () => {
+      await new Promise((resolve) => server.close(() => resolve()));
+      await rm(dir, { recursive: true, force: true });
+    },
+  };
+}
+
+async function runLocalFallback() {
+  console.log('REAL_TIKTOK_RESOLVER_BLOCKED', 'using local 181s vertical fixture to test Status HQ encoder');
+  const fixture = await makeLocalFixture();
+  let prepared;
+  try {
+    prepared = await prepareWhatsAppStatusHQ({
+      sourceUrl: fixture.url,
+      platform: 'fixture',
+      video: {
+        url: fixture.url,
+        ext: 'mp4',
+        headers: null,
+        quality: 'fixture',
+        hasAudio: true,
+        source: 'fixture',
+      },
+    });
+    await verifyPrepared(prepared, 'local-fallback');
+  } finally {
+    if (prepared?.cleanup) await prepared.cleanup().catch(() => {});
+    await fixture.cleanup().catch(() => {});
+  }
+}
+
 console.log('SAVED_LINK', savedLink);
-const saved = await checkSavedLink(savedLink);
-if (saved.alive) {
-  await runStatus(saved.canonical || savedLink, 'saved-link');
-} else {
-  console.log('SAVED_LINK_DEAD', saved.reason);
-  console.log('CONTROL_LINK', controlLink);
-  await runStatus(controlLink, 'control-link');
+try {
+  const saved = await checkSavedLink(savedLink);
+  if (saved.alive) {
+    await runStatus(saved.canonical || savedLink, 'saved-link');
+  } else {
+    console.log('SAVED_LINK_DEAD', saved.reason);
+    console.log('CONTROL_LINK', controlLink);
+    await runStatus(controlLink, 'control-link');
+  }
+} catch (error) {
+  const text = String(error?.message || error);
+  if (!/TikWM HTTP 403/i.test(text)) throw error;
+  await runLocalFallback();
 }
