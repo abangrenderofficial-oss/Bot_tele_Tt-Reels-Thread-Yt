@@ -6,6 +6,13 @@ import { promisify } from 'node:util';
 const execFileAsync = promisify(execFile);
 const TIKWM_API = 'https://www.tikwm.com/api/';
 const TIKWM_ORIGIN = 'https://www.tikwm.com';
+const PIPED_INSTANCES = [
+  'https://pipedapi.kavin.rocks',
+  'https://pipedapi.leptons.xyz',
+  'https://pipedapi.nosebs.ru',
+  'https://pipedapi.syncpundit.io',
+  'https://api-piped.mha.fi',
+];
 
 function normalizeInfo(raw) {
   if (!raw) return null;
@@ -169,6 +176,181 @@ async function parseTikTok(url) {
   };
 }
 
+function youtubeIdFromUrl(input) {
+  try {
+    const u = new URL(input);
+    if (u.hostname === 'youtu.be') return u.pathname.split('/').filter(Boolean)[0] || '';
+    if (u.hostname.endsWith('youtube.com')) {
+      if (u.pathname === '/watch') return u.searchParams.get('v') || '';
+      const parts = u.pathname.split('/').filter(Boolean);
+      if (['shorts', 'embed', 'live'].includes(parts[0])) return parts[1] || '';
+    }
+  } catch {}
+  return '';
+}
+
+async function parseYouTubeWithPiped(url) {
+  const videoId = youtubeIdFromUrl(url);
+  if (!videoId) {
+    const err = new Error('Could not read YouTube video ID.');
+    err.code = 'NO_MEDIA';
+    throw err;
+  }
+
+  const failures = [];
+  for (const base of PIPED_INSTANCES) {
+    try {
+      const response = await fetch(`${base}/streams/${encodeURIComponent(videoId)}`, {
+        headers: { Accept: 'application/json', 'User-Agent': 'ARDownloader/1.0' },
+        signal: AbortSignal.timeout(10000),
+      });
+      if (!response.ok) {
+        failures.push(`${new URL(base).host}:${response.status}`);
+        continue;
+      }
+      const data = await response.json();
+      const streams = Array.isArray(data?.videoStreams) ? data.videoStreams : [];
+      const combined = streams
+        .filter((s) => s?.url && s.videoOnly === false)
+        .map((s) => ({
+          url: s.url,
+          quality: s.quality || (s.height ? `${s.height}p` : 'video'),
+          width: s.width ?? null,
+          height: s.height ?? null,
+          ext: String(s.format || '').toUpperCase().includes('MPEG') || String(s.mimeType || '').includes('mp4') ? 'mp4' : null,
+          hasAudio: true,
+          source: 'piped',
+          headers: null,
+          filesize: s.contentLength ? Number(s.contentLength) : null,
+        }));
+      if (!combined.length) {
+        failures.push(`${new URL(base).host}:no-combined-stream`);
+        continue;
+      }
+      return {
+        platform: 'YouTube',
+        title: data.title || '',
+        thumbnail: data.thumbnailUrl || '',
+        duration: data.duration ?? null,
+        images: [],
+        videos: combined,
+        audios: [],
+      };
+    } catch (error) {
+      failures.push(`${new URL(base).host}:${error?.name || 'error'}`);
+    }
+  }
+
+  const err = new Error(`Piped fallback failed: ${failures.join(', ')}`);
+  err.code = 'DOWNLOADER_ERROR';
+  throw err;
+}
+
+function decodeHtml(value = '') {
+  return String(value)
+    .replaceAll('&amp;', '&')
+    .replaceAll('&quot;', '"')
+    .replaceAll('&#39;', "'")
+    .replaceAll('&lt;', '<')
+    .replaceAll('&gt;', '>');
+}
+
+function readMeta(html, keys) {
+  const tags = html.match(/<meta\b[^>]*>/gi) || [];
+  for (const tag of tags) {
+    const attrs = {};
+    for (const match of tag.matchAll(/([\w:-]+)\s*=\s*(["'])(.*?)\2/gi)) {
+      attrs[match[1].toLowerCase()] = decodeHtml(match[3]);
+    }
+    const name = String(attrs.property || attrs.name || '').toLowerCase();
+    if (keys.includes(name) && attrs.content) return attrs.content;
+  }
+  return '';
+}
+
+function unescapeJsonUrl(value = '') {
+  if (!value) return '';
+  try {
+    return JSON.parse(`"${value.replaceAll('"', '\\"')}"`);
+  } catch {
+    return value.replaceAll('\\/', '/').replaceAll('\\u0026', '&');
+  }
+}
+
+async function parseThreads(url) {
+  let response;
+  try {
+    response = await fetch(url, {
+      redirect: 'follow',
+      headers: {
+        Accept: 'text/html,application/xhtml+xml',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/140.0 Safari/537.36',
+      },
+      signal: AbortSignal.timeout(15000),
+    });
+  } catch (error) {
+    const err = new Error(`Threads request failed: ${error?.message || error}`);
+    err.code = 'DOWNLOADER_ERROR';
+    throw err;
+  }
+
+  if (!response.ok) {
+    const err = new Error(`Threads HTTP ${response.status}`);
+    err.code = 'DOWNLOADER_ERROR';
+    throw err;
+  }
+
+  const html = await response.text();
+  const title = readMeta(html, ['og:title', 'twitter:title']) || 'Threads media';
+  const image = readMeta(html, ['og:image', 'og:image:secure_url', 'twitter:image']);
+  let video = readMeta(html, ['og:video', 'og:video:secure_url', 'twitter:player:stream']);
+
+  if (!video) {
+    const candidates = [];
+    for (const regex of [
+      /"video_url"\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"/g,
+      /"playable_url"\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"/g,
+      /"url"\s*:\s*"(https?:\\?\/\\?\/[^"\\]+\.mp4[^"\\]*)"/g,
+    ]) {
+      for (const match of html.matchAll(regex)) candidates.push(unescapeJsonUrl(match[1]));
+    }
+    video = candidates.find((item) => /^https?:\/\//i.test(item)) || '';
+  }
+
+  const videos = video ? [{
+    url: decodeHtml(video),
+    quality: 'video',
+    width: null,
+    height: null,
+    ext: 'mp4',
+    hasAudio: true,
+    source: 'threads-page',
+    headers: {
+      Referer: response.url || 'https://www.threads.com/',
+      'User-Agent': 'Mozilla/5.0',
+    },
+    filesize: null,
+  }] : [];
+
+  const images = !videos.length && image ? [{ url: decodeHtml(image), headers: null }] : [];
+  if (!videos.length && !images.length) {
+    const err = new Error(`Threads page had no public media metadata (final=${response.url}, bytes=${html.length}).`);
+    err.code = 'NO_MEDIA';
+    throw err;
+  }
+
+  return {
+    platform: 'Threads',
+    title,
+    thumbnail: image || '',
+    duration: null,
+    images,
+    videos,
+    audios: [],
+  };
+}
+
 async function parseWithYtDlp(url) {
   const binary = path.join(process.cwd(), 'bin', 'yt-dlp');
   try {
@@ -225,14 +407,26 @@ async function parseWithYtDlp(url) {
 }
 
 export async function parseMedia(url) {
-  if (/threads\.(net|com)/i.test(url)) {
-    const err = new Error('Threads needs a dedicated free extractor adapter.');
-    err.code = 'THREADS_ADAPTER_PENDING';
-    throw err;
+  const hostname = new URL(url).hostname.toLowerCase();
+
+  if (hostname.endsWith('threads.net') || hostname.endsWith('threads.com')) {
+    return parseThreads(url);
   }
 
-  if (/(^|\.)tiktok\.com/i.test(new URL(url).hostname)) {
+  if (hostname === 'tiktok.com' || hostname.endsWith('.tiktok.com')) {
     return parseTikTok(url);
+  }
+
+  if (hostname === 'youtu.be' || hostname.endsWith('youtube.com')) {
+    try {
+      return await parseWithYtDlp(url);
+    } catch (error) {
+      return parseYouTubeWithPiped(url).catch((fallbackError) => {
+        const err = new Error(`yt-dlp: ${error?.message || error}; fallback: ${fallbackError?.message || fallbackError}`);
+        err.code = 'DOWNLOADER_ERROR';
+        throw err;
+      });
+    }
   }
 
   return parseWithYtDlp(url);
