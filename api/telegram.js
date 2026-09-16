@@ -1,5 +1,6 @@
 import { parseMedia, chooseBestVideo, needsCustomHeaders } from '../src/downloader.js';
 import { parseThreadsPost } from '../src/threads.js';
+import { prepareYouTubeTelegramUpload } from '../src/youtube-upload.js';
 import { detectPlatform, extractFirstUrl, platformLabel } from '../src/platform.js';
 import { createRelayUrl } from '../src/relay.js';
 import {
@@ -8,6 +9,7 @@ import {
   sendMediaGroup,
   sendMessage,
   sendPhotoUrl,
+  sendVideoFileUpload,
   sendVideoUpload,
   sendVideoUrl,
 } from '../src/telegram.js';
@@ -23,6 +25,8 @@ const START_TEXT = [
   '• Instagram Reels / Post',
   '• Threads',
   '• YouTube / Shorts',
+  '',
+  'YouTube: bot utamakan 1080p, kemudian 720p, kemudian 480p. Jika video dan audio berasingan, bot akan merge dahulu sebelum hantar ke Telegram.',
   '',
   'Bot akan cuba hantar media terus dalam chat. Untuk CDN yang perlukan header khas, bot akan relay media melalui server sendiri dan cuba upload terus ke Telegram.',
   '',
@@ -140,8 +144,6 @@ async function deliverVideo(chatId, video, title, baseUrl) {
   const customHeaders = needsCustomHeaders(video);
   const relay = relayItem(baseUrl, video);
 
-  // Telegram's cloud Bot API can fetch an HTTP URL only up to 20 MB.
-  // If the size is known to be larger, skip this step and upload the bytes.
   if (!size || size <= TELEGRAM_URL_FETCH_MAX) {
     const fetchUrl = customHeaders ? relay?.url : video.url;
     if (fetchUrl) {
@@ -166,6 +168,21 @@ async function deliverVideo(chatId, video, title, baseUrl) {
   } catch (error) {
     console.warn('Telegram server upload failed:', error?.code, error?.message);
     return false;
+  }
+}
+
+async function deliverPreferredYouTube(chatId, url, title) {
+  let prepared = null;
+  try {
+    prepared = await prepareYouTubeTelegramUpload(url, configuredUploadLimit());
+    const caption = `${title}\n🎬 ${prepared.quality}`;
+    await sendVideoFileUpload(chatId, prepared.filePath, caption);
+    return true;
+  } catch (error) {
+    console.warn('Preferred YouTube pipeline failed:', error?.code, error?.message);
+    return false;
+  } finally {
+    if (prepared?.cleanup) await prepared.cleanup().catch(() => {});
   }
 }
 
@@ -220,7 +237,12 @@ async function processMessage(message, baseUrl) {
   const candidates = orderedVideoCandidates(media.videos);
   let videoSent = false;
 
-  if (candidates.length) {
+  if (platform === 'youtube') {
+    await sendChatAction(chatId, 'upload_video').catch(() => {});
+    videoSent = await deliverPreferredYouTube(chatId, url, title);
+  }
+
+  if (candidates.length && !videoSent) {
     await sendChatAction(chatId, 'upload_video').catch(() => {});
     for (const candidate of candidates.slice(0, 6)) {
       if (await deliverVideo(chatId, candidate, title, baseUrl)) {
@@ -234,7 +256,7 @@ async function processMessage(message, baseUrl) {
       if (best) {
         await sendDownloadButton(
           chatId,
-          `${title}\n\nBot dah cuba direct URL, relay dan server upload, tapi fail ini masih melebihi had Telegram cloud atau CDN menolak transfer.`,
+          `${title}\n\nBot dah cuba 1080p/720p/480p, direct URL, relay dan server upload, tapi fail ini masih melebihi had Telegram cloud atau CDN menolak transfer.`,
           best.url,
           `⬇️ Download ${best.quality || 'video'}`,
         );
@@ -274,7 +296,6 @@ export default async function handler(req, res) {
     return json(res, 200, { ok: true });
   } catch (error) {
     console.error('Webhook error:', error);
-    // Telegram should receive 200 so a bad update does not get retried repeatedly.
     return json(res, 200, { ok: false, handled: true });
   }
 }
