@@ -1,6 +1,6 @@
 {
   "name": "telegram-social-downloader-bot",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "private": true,
   "type": "module",
   "engines": {
@@ -8,7 +8,7 @@
   },
   "scripts": {
     "postinstall": "node scripts/install-ytdlp.mjs && node scripts/patch-runtime.mjs",
-    "check": "node --check api/telegram.js && node --check api/health.js && node --check src/downloader.js && node --check src/telegram.js && node --check src/youtube-upload.js"
+    "check": "node --check api/telegram.js && node --check api/health.js && node --check src/downloader.js && node --check src/telegram.js && node --check src/threads.js && node --check src/social-video.js && node --check src/youtube-upload.js"
   },
   "dependencies": {
     "ffmpeg-static": "^5.2.0"
