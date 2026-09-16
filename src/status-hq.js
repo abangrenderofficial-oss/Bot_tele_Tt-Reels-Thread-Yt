@@ -11,29 +11,75 @@ import ffmpegPath from 'ffmpeg-static';
 
 const execFileAsync = promisify(execFile);
 
-// This profile mirrors the empirically-tested StatusDrop defaults that were
-// designed for WhatsApp Status delivery: fixed portrait canvas, H.264/AAC,
-// 29-second chunks, capped rate, faststart and a per-clip size target below
-// 16 MiB. It cannot stop WhatsApp from re-encoding, but it prepares the file
-// in the format that has performed well in real-device testing.
-const STATUS_PROFILE = Object.freeze({
+// Shorter videos use the tested 1080x1920 / 29s profile.
+// If that would create too many parts, switch automatically to StatusDrop's
+// tested longer-clips profile: 720x1280 / ~59s at ~2.2 Mbps. This keeps long
+// videos from being rejected just because they need >6 x 29-second parts.
+const STANDARD_PROFILE = Object.freeze({
+  mode: 'quality',
+  label: '1080p Quality',
   width: 1080,
   height: 1920,
   clipSeconds: 29,
   fps: '30000/1001',
-  crf: 23,
-  maxRateKbps: 3800,
-  bufferKbps: 5700,
   audioKbps: 128,
   sampleRate: 44100,
   sizeLimitBytes: Math.round(15.5 * 1024 * 1024),
+  preset: 'fast',
+  retries: Object.freeze([
+    { crf: 23, maxRateKbps: 3800, bufferKbps: 5700 },
+    { crf: 24, maxRateKbps: 3300, bufferKbps: 4950 },
+    { crf: 25, maxRateKbps: 2800, bufferKbps: 4200 },
+  ]),
 });
 
-const RETRY_PROFILES = [
-  { crf: 23, maxRateKbps: 3800, bufferKbps: 5700 },
-  { crf: 24, maxRateKbps: 3300, bufferKbps: 4950 },
-  { crf: 25, maxRateKbps: 2800, bufferKbps: 4200 },
-];
+const LONG_PROFILE = Object.freeze({
+  mode: 'long',
+  label: '720p Long',
+  width: 720,
+  height: 1280,
+  clipSeconds: 59,
+  fps: '30000/1001',
+  audioKbps: 128,
+  sampleRate: 44100,
+  sizeLimitBytes: Math.round(15.5 * 1024 * 1024),
+  preset: 'veryfast',
+  retries: Object.freeze([
+    { crf: 24, maxRateKbps: 2200, bufferKbps: 3300 },
+    { crf: 25, maxRateKbps: 1900, bufferKbps: 2850 },
+    { crf: 26, maxRateKbps: 1650, bufferKbps: 2475 },
+  ]),
+});
+
+function positiveInt(value, fallback) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 1) return fallback;
+  return Math.max(1, Math.floor(parsed));
+}
+
+function chooseProfile(durationSeconds) {
+  const standardMaxClips = positiveInt(process.env.STATUS_HQ_MAX_CLIPS, 6);
+  const standardCount = Math.ceil(durationSeconds / STANDARD_PROFILE.clipSeconds);
+
+  if (standardCount <= standardMaxClips) {
+    return {
+      profile: STANDARD_PROFILE,
+      clipCount: standardCount,
+      maxClips: standardMaxClips,
+      switchedForLength: false,
+    };
+  }
+
+  const longMaxClips = positiveInt(process.env.STATUS_HQ_LONG_MAX_CLIPS, 6);
+  const longCount = Math.ceil(durationSeconds / LONG_PROFILE.clipSeconds);
+  return {
+    profile: LONG_PROFILE,
+    clipCount: longCount,
+    maxClips: longMaxClips,
+    switchedForLength: true,
+    standardCount,
+  };
+}
 
 function commandOptions(timeoutMs) {
   return {
@@ -180,16 +226,16 @@ async function probeLocalVideo(filePath) {
   };
 }
 
-function statusVideoFilter() {
+function statusVideoFilter(profile) {
   return [
-    `scale=w=${STATUS_PROFILE.width}:h=${STATUS_PROFILE.height}:force_original_aspect_ratio=decrease`,
-    `pad=${STATUS_PROFILE.width}:${STATUS_PROFILE.height}:(ow-iw)/2:(oh-ih)/2:color=black`,
+    `scale=w=${profile.width}:h=${profile.height}:force_original_aspect_ratio=decrease`,
+    `pad=${profile.width}:${profile.height}:(ow-iw)/2:(oh-ih)/2:color=black`,
     'scale=trunc(iw/2)*2:trunc(ih/2)*2',
-    `fps=${STATUS_PROFILE.fps}`,
+    `fps=${profile.fps}`,
   ].join(',');
 }
 
-async function encodeStatusClip(inputPath, outputPath, startSeconds, durationSeconds, rateProfile) {
+async function encodeStatusClip(inputPath, outputPath, startSeconds, durationSeconds, profile, rateProfile) {
   await rm(outputPath, { force: true }).catch(() => {});
 
   const args = [
@@ -199,8 +245,9 @@ async function encodeStatusClip(inputPath, outputPath, startSeconds, durationSec
     '-i', inputPath,
     '-map', '0:v:0',
     '-map', '0:a:0?',
-    '-vf', statusVideoFilter(),
+    '-vf', statusVideoFilter(profile),
     '-c:v', 'libx264',
+    '-preset', profile.preset,
     '-pix_fmt', 'yuv420p',
     '-color_range', 'tv',
     '-color_primaries', 'bt470bg',
@@ -214,9 +261,9 @@ async function encodeStatusClip(inputPath, outputPath, startSeconds, durationSec
     '-level:v', '4.0',
     '-x264-params', 'sei=0',
     '-c:a', 'aac',
-    '-ar', String(STATUS_PROFILE.sampleRate),
+    '-ar', String(profile.sampleRate),
     '-ac', '2',
-    '-b:a', `${STATUS_PROFILE.audioKbps}k`,
+    '-b:a', `${profile.audioKbps}k`,
     '-brand', 'isom',
     '-movflags', '+faststart',
     '-map_metadata', '-1',
@@ -240,11 +287,19 @@ async function encodeStatusClip(inputPath, outputPath, startSeconds, durationSec
   return fileStat.size;
 }
 
-async function encodeClipWithRetries(inputPath, outputBase, index, startSeconds, durationSeconds, allPaths) {
+async function encodeClipWithRetries(
+  inputPath,
+  outputBase,
+  index,
+  startSeconds,
+  durationSeconds,
+  allPaths,
+  profile,
+) {
   let lastPath = '';
   let lastSize = 0;
 
-  for (let attempt = 0; attempt < RETRY_PROFILES.length; attempt += 1) {
+  for (let attempt = 0; attempt < profile.retries.length; attempt += 1) {
     const outputPath = `${outputBase}-part-${String(index + 1).padStart(2, '0')}-a${attempt + 1}.mp4`;
     allPaths.push(outputPath);
     lastPath = outputPath;
@@ -253,10 +308,11 @@ async function encodeClipWithRetries(inputPath, outputBase, index, startSeconds,
       outputPath,
       startSeconds,
       durationSeconds,
-      RETRY_PROFILES[attempt],
+      profile,
+      profile.retries[attempt],
     );
 
-    if (lastSize <= STATUS_PROFILE.sizeLimitBytes) {
+    if (lastSize <= profile.sizeLimitBytes) {
       return { filePath: outputPath, size: lastSize, attempt: attempt + 1 };
     }
 
@@ -290,22 +346,31 @@ export async function prepareWhatsAppStatusHQ({ sourceUrl, platform, video }) {
     }
 
     const probe = await probeLocalVideo(inputPath);
-    const clipCount = Math.ceil(probe.duration / STATUS_PROFILE.clipSeconds);
-    const maxClips = Math.max(1, Number(process.env.STATUS_HQ_MAX_CLIPS || 6));
+    const choice = chooseProfile(probe.duration);
+    const { profile, clipCount, maxClips } = choice;
+
     if (clipCount > maxClips) {
       const err = new Error(
-        `Video ini perlukan ${clipCount} bahagian Status HQ. Had semasa ialah ${maxClips} bahagian supaya proses tak timeout.`,
+        `Video terlalu panjang untuk satu proses Status HQ. Mode Long sudah aktif (${profile.width}×${profile.height}, ${profile.clipSeconds}s/part) tetapi masih perlukan ${clipCount} bahagian. Had selamat semasa ialah ${maxClips} bahagian.`,
       );
       err.code = 'STATUS_TOO_MANY_CLIPS';
       err.clipCount = clipCount;
       err.maxClips = maxClips;
+      err.profile = profile.mode;
       throw err;
+    }
+
+    if (choice.switchedForLength) {
+      console.info(
+        `Status HQ auto-switched from ${choice.standardCount} x 29s parts to ` +
+        `${clipCount} x 59s parts at 720x1280.`,
+      );
     }
 
     const clips = [];
     for (let index = 0; index < clipCount; index += 1) {
-      const startSeconds = index * STATUS_PROFILE.clipSeconds;
-      const durationSeconds = Math.min(STATUS_PROFILE.clipSeconds, probe.duration - startSeconds);
+      const startSeconds = index * profile.clipSeconds;
+      const durationSeconds = Math.min(profile.clipSeconds, probe.duration - startSeconds);
       const encoded = await encodeClipWithRetries(
         inputPath,
         base,
@@ -313,6 +378,7 @@ export async function prepareWhatsAppStatusHQ({ sourceUrl, platform, video }) {
         startSeconds,
         durationSeconds,
         allPaths,
+        profile,
       );
       clips.push({
         ...encoded,
@@ -327,8 +393,9 @@ export async function prepareWhatsAppStatusHQ({ sourceUrl, platform, video }) {
     return {
       clips,
       source: probe,
-      quality: 'Status HQ • 1080×1920 • H.264/AAC • 29s max/part',
-      profile: STATUS_PROFILE,
+      quality: `Status HQ • ${profile.width}×${profile.height} • H.264/AAC • ${profile.clipSeconds}s max/part`,
+      profile,
+      switchedForLength: choice.switchedForLength,
       cleanup: async () => cleanup(allPaths),
     };
   } catch (error) {
