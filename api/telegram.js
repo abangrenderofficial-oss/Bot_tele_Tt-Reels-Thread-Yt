@@ -28,6 +28,8 @@ const TELEGRAM_URL_FETCH_MAX = 20 * 1024 * 1024;
 const TELEGRAM_CLOUD_UPLOAD_MAX = 50 * 1024 * 1024;
 const TT_SLIDE_SPLIT = 'ttslide:split:v2';
 const TT_SLIDE_VIDEO = 'ttslide:video:v2';
+const MEDIA_DOWNLOAD = 'media:download:v1';
+const MEDIA_STATUS_HQ = 'media:status:v1';
 
 const START_TEXT = [
   '📥 Social Downloader Bot',
@@ -39,15 +41,14 @@ const START_TEXT = [
   '• X / Twitter video',
   '• YouTube / Shorts / Unlisted',
   '',
+  'Selepas hantar link, bot akan tanya:',
+  '⬇️ Download Biasa atau 📱 Status HQ.',
+  '',
   'YouTube: bot support video public dan unlisted yang boleh dibuka menggunakan link. Bot utamakan 1080p, kemudian 720p, kemudian 480p. Jika video dan audio berasingan, bot akan merge dahulu sebelum hantar ke Telegram.',
-  'TikTok video: bot hantar video seperti biasa. TikTok photo/slideshow: bot akan beri pilihan Split (Image + Audio) atau Video.',
+  'TikTok video: bot hantar video seperti biasa. TikTok photo/slideshow: selepas pilih Download Biasa, bot akan beri pilihan Split (Image + Audio) atau Video.',
   'TikTok / Instagram / Threads / X: jika video melebihi had Telegram, bot akan cuba compress HQ dahulu sambil mengekalkan aspect ratio asal.',
   '',
-  '📱 WhatsApp Status HQ test:',
-  'Hantar /status <link> untuk bina versi khas 1080×1920 H.264/AAC. Video dibahagi maksimum 29 saat setiap part, ratio asal dikekalkan dengan padding dan setiap part ditarget bawah ±15.5 MB.',
-  'Selepas terima: Save video → hantar ke chat sendiri dalam WhatsApp dengan HD → Forward copy baru itu ke My Status. Jangan trim/edit lagi dalam WhatsApp.',
-  '',
-  'Bot akan cuba hantar media terus dalam chat. Untuk CDN yang perlukan header khas, bot akan relay media melalui server sendiri dan cuba upload terus ke Telegram.',
+  '📱 Status HQ: 1080×1920 H.264/AAC, maksimum 29 saat setiap part, ratio asal dikekalkan tanpa stretch. /status <link> masih boleh digunakan sebagai shortcut.',
   '',
   'Gunakan hanya untuk media yang anda miliki atau dibenarkan untuk dimuat turun.',
 ].join('\n');
@@ -163,9 +164,7 @@ async function deliverCompressedSocial(chatId, video, title, durationHint) {
       duration: Number(video?.duration || durationHint || 0) || null,
     });
 
-    const caption = prepared.compressed
-      ? `${title}\n🎬 ${prepared.quality}`
-      : title;
+    const caption = prepared.compressed ? `${title}\n🎬 ${prepared.quality}` : title;
     await sendVideoFileUpload(chatId, prepared.filePath, caption);
     return true;
   } catch (error) {
@@ -198,9 +197,7 @@ async function deliverVideo(chatId, video, title, baseUrl, options = {}) {
   }
 
   if (size && size > uploadLimit) {
-    if (allowSocialCompression) {
-      return deliverCompressedSocial(chatId, video, title, options.duration);
-    }
+    if (allowSocialCompression) return deliverCompressedSocial(chatId, video, title, options.duration);
     console.warn(`Skipping ${video.quality || 'video'}: known size ${size} exceeds Telegram upload limit ${uploadLimit}.`);
     return false;
   }
@@ -210,9 +207,7 @@ async function deliverVideo(chatId, video, title, baseUrl, options = {}) {
     return true;
   } catch (error) {
     console.warn('Telegram server upload failed:', error?.code, error?.message);
-    if (allowSocialCompression) {
-      return deliverCompressedSocial(chatId, video, title, options.duration);
-    }
+    if (allowSocialCompression) return deliverCompressedSocial(chatId, video, title, options.duration);
     return false;
   }
 }
@@ -221,8 +216,7 @@ async function deliverPreferredYouTube(chatId, url, title) {
   let prepared = null;
   try {
     prepared = await prepareYouTubeTelegramUpload(url, configuredUploadLimit());
-    const caption = `${title}\n🎬 ${prepared.quality}`;
-    await sendVideoFileUpload(chatId, prepared.filePath, caption);
+    await sendVideoFileUpload(chatId, prepared.filePath, `${title}\n🎬 ${prepared.quality}`);
     return true;
   } catch (error) {
     console.warn('Preferred YouTube pipeline failed:', error?.code, error?.message);
@@ -242,6 +236,21 @@ function emptyYouTubeMedia() {
     videos: [],
     audios: [],
   };
+}
+
+async function sendMediaModeChoice(chatId, url, platform) {
+  await sendMessage(
+    chatId,
+    `🔗 ${platformLabel(platform)} link dikesan.\nNak buat apa dengan video ni?\n\n${url}`,
+    {
+      reply_markup: {
+        inline_keyboard: [[
+          { text: '⬇️ Download Biasa', callback_data: MEDIA_DOWNLOAD },
+          { text: '📱 Status HQ', callback_data: MEDIA_STATUS_HQ },
+        ]],
+      },
+    },
+  );
 }
 
 async function sendTikTokSlideshowChoice(chatId, url) {
@@ -292,7 +301,6 @@ async function processTikTokSplit(callbackQuery, baseUrl) {
   const chatId = callbackQuery?.message?.chat?.id;
   if (!chatId) return;
 
-  console.info('TikTok slideshow action=split_v2');
   await telegram('answerCallbackQuery', {
     callback_query_id: callbackQuery.id,
     text: 'Sedang sediakan gambar + audio berasingan…',
@@ -304,7 +312,6 @@ async function processTikTokSplit(callbackQuery, baseUrl) {
 
   let preparedSound = null;
   try {
-    // SPLIT MODE MUST ONLY SEND PHOTOS + AUDIO. No MP4 renderer is called here.
     await sendChatAction(chatId, 'upload_photo').catch(() => {});
     await deliverImages(chatId, slideshow.images, 'TikTok images', baseUrl);
 
@@ -323,7 +330,6 @@ async function processTikTokVideo(callbackQuery) {
   const chatId = callbackQuery?.message?.chat?.id;
   if (!chatId) return;
 
-  console.info('TikTok slideshow action=video_v2');
   await telegram('answerCallbackQuery', {
     callback_query_id: callbackQuery.id,
     text: 'Sedang bina video dengan ratio asal…',
@@ -337,8 +343,7 @@ async function processTikTokVideo(callbackQuery) {
   try {
     await sendChatAction(chatId, 'upload_video').catch(() => {});
     preparedVideo = await prepareTikTokSlideshowVideo(slideshow, configuredUploadLimit());
-    const caption = `TikTok slideshow\n🎬 ${preparedVideo.quality}`;
-    await sendVideoFileUpload(chatId, preparedVideo.filePath, caption);
+    await sendVideoFileUpload(chatId, preparedVideo.filePath, `TikTok slideshow\n🎬 ${preparedVideo.quality}`);
   } catch (error) {
     console.error('TikTok slideshow video_v2 failed:', error?.code, error?.message);
     await sendMessage(chatId, '❌ Tak berjaya gabungkan slideshow + audio menjadi video. Cuba semula kemudian.');
@@ -351,11 +356,13 @@ async function processTikTokSlideshowChoice(callbackQuery, baseUrl) {
   const action = String(callbackQuery?.data || '');
   if (action === TT_SLIDE_SPLIT) {
     await processTikTokSplit(callbackQuery, baseUrl);
-    return;
+    return true;
   }
   if (action === TT_SLIDE_VIDEO) {
     await processTikTokVideo(callbackQuery);
+    return true;
   }
+  return false;
 }
 
 async function resolveStatusMedia(platform, url) {
@@ -392,11 +399,7 @@ async function processStatusMessage(chatId, url, platform) {
       return;
     }
 
-    prepared = await prepareWhatsAppStatusHQ({
-      sourceUrl: url,
-      platform,
-      video: best,
-    });
+    prepared = await prepareWhatsAppStatusHQ({ sourceUrl: url, platform, video: best });
 
     for (const clip of prepared.clips) {
       await sendChatAction(chatId, 'upload_video').catch(() => {});
@@ -435,41 +438,7 @@ async function processStatusMessage(chatId, url, platform) {
   }
 }
 
-async function processMessage(message, baseUrl) {
-  const chatId = message?.chat?.id;
-  const text = message?.text || message?.caption || '';
-  if (!chatId) return;
-
-  const commandToken = text.trim().split(/\s+/)[0]?.toLowerCase() || '';
-  const command = commandToken.split('@')[0];
-  if (command === '/start' || command === '/help') {
-    await sendMessage(chatId, START_TEXT);
-    return;
-  }
-
-  const statusMode = command === '/status' || command === 'status';
-  const url = extractFirstUrl(text);
-  if (!url) {
-    await sendMessage(
-      chatId,
-      statusMode
-        ? 'Guna format: /status <link video>'
-        : 'Hantar satu link TikTok, Instagram, Threads, X/Twitter atau YouTube.',
-    );
-    return;
-  }
-
-  const platform = detectPlatform(url);
-  if (!platform) {
-    await sendMessage(chatId, 'Link ni belum disokong. Buat masa sekarang: TikTok, Instagram, Threads, X/Twitter dan YouTube.');
-    return;
-  }
-
-  if (statusMode) {
-    await processStatusMessage(chatId, url, platform);
-    return;
-  }
-
+async function processStandardDownload(chatId, url, platform, baseUrl) {
   await sendChatAction(chatId, 'typing').catch(() => {});
 
   let media;
@@ -489,12 +458,10 @@ async function processMessage(message, baseUrl) {
         await sendMessage(chatId, '⚙️ Bot downloader belum lengkap dikonfigurasi oleh admin.');
         return;
       }
-
       if (error?.code === 'NO_MEDIA') {
         await sendMessage(chatId, 'Tak jumpa video/media yang boleh dimuat turun. Pastikan post itu boleh diakses dan masih wujud.');
         return;
       }
-
       await sendMessage(chatId, '❌ Tak berjaya proses link tu. Cuba link asal atau cuba semula kemudian.');
       return;
     }
@@ -517,10 +484,7 @@ async function processMessage(message, baseUrl) {
   if (candidates.length && !videoSent) {
     await sendChatAction(chatId, 'upload_video').catch(() => {});
     for (const candidate of candidates.slice(0, 6)) {
-      if (await deliverVideo(chatId, candidate, title, baseUrl, {
-        platform,
-        duration: media.duration,
-      })) {
+      if (await deliverVideo(chatId, candidate, title, baseUrl, { platform, duration: media.duration })) {
         videoSent = true;
         break;
       }
@@ -562,6 +526,74 @@ async function processMessage(message, baseUrl) {
   }
 }
 
+async function processMediaModeChoice(callbackQuery, baseUrl) {
+  const action = String(callbackQuery?.data || '');
+  if (action !== MEDIA_DOWNLOAD && action !== MEDIA_STATUS_HQ) return false;
+
+  const chatId = callbackQuery?.message?.chat?.id;
+  if (!chatId) return true;
+
+  const sourceText = callbackQuery?.message?.text || callbackQuery?.message?.caption || '';
+  const url = extractFirstUrl(sourceText);
+  const platform = url ? detectPlatform(url) : null;
+
+  await telegram('answerCallbackQuery', {
+    callback_query_id: callbackQuery.id,
+    text: action === MEDIA_STATUS_HQ ? 'Status HQ dipilih.' : 'Download biasa dipilih.',
+  }).catch(() => {});
+  await disableChoiceButtons(callbackQuery);
+
+  if (!url || !platform) {
+    await sendMessage(chatId, '❌ Link asal tak dapat dibaca. Hantar semula link video itu.');
+    return true;
+  }
+
+  if (action === MEDIA_STATUS_HQ) {
+    await processStatusMessage(chatId, url, platform);
+  } else {
+    await processStandardDownload(chatId, url, platform, baseUrl);
+  }
+  return true;
+}
+
+async function processMessage(message) {
+  const chatId = message?.chat?.id;
+  const text = message?.text || message?.caption || '';
+  if (!chatId) return;
+
+  const commandToken = text.trim().split(/\s+/)[0]?.toLowerCase() || '';
+  const command = commandToken.split('@')[0];
+  if (command === '/start' || command === '/help') {
+    await sendMessage(chatId, START_TEXT);
+    return;
+  }
+
+  const statusMode = command === '/status' || command === 'status';
+  const url = extractFirstUrl(text);
+  if (!url) {
+    await sendMessage(
+      chatId,
+      statusMode
+        ? 'Guna format: /status <link video>'
+        : 'Hantar satu link TikTok, Instagram, Threads, X/Twitter atau YouTube.',
+    );
+    return;
+  }
+
+  const platform = detectPlatform(url);
+  if (!platform) {
+    await sendMessage(chatId, 'Link ni belum disokong. Buat masa sekarang: TikTok, Instagram, Threads, X/Twitter dan YouTube.');
+    return;
+  }
+
+  if (statusMode) {
+    await processStatusMessage(chatId, url, platform);
+    return;
+  }
+
+  await sendMediaModeChoice(chatId, url, platform);
+}
+
 export default async function handler(req, res) {
   if (req.method === 'GET') {
     return json(res, 200, { ok: true, service: 'telegram-social-downloader', endpoint: 'webhook' });
@@ -581,12 +613,15 @@ export default async function handler(req, res) {
     const baseUrl = requestBaseUrl(req);
     const callbackQuery = update?.callback_query;
     if (callbackQuery) {
+      if (await processMediaModeChoice(callbackQuery, baseUrl)) {
+        return json(res, 200, { ok: true });
+      }
       await processTikTokSlideshowChoice(callbackQuery, baseUrl);
       return json(res, 200, { ok: true });
     }
 
     const message = update?.message ?? update?.edited_message;
-    if (message) await processMessage(message, baseUrl);
+    if (message) await processMessage(message);
     return json(res, 200, { ok: true });
   } catch (error) {
     console.error('Webhook error:', error);
