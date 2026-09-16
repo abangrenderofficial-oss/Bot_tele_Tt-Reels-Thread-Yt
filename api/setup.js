@@ -61,7 +61,7 @@ export default async function handler(req, res) {
     await telegram('setWebhook', {
       url: `${baseUrl}/api/telegram`,
       secret_token: webhookSecret,
-      allowed_updates: ['message', 'edited_message'],
+      allowed_updates: ['message', 'edited_message', 'callback_query'],
       drop_pending_updates: true,
     });
 
