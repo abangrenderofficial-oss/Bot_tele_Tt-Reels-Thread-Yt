@@ -23,7 +23,7 @@ jobs:
       - run: npm install
       - name: Process real TikTok link through Status HQ
         env:
-          STATUS_TEST_URL: https://vt.tiktok.com/ZSgbsv3MX
+          STATUS_TEST_URL: https://www.tiktok.com/@j_k_123_7/video/7654589734496341262
           STATUS_HQ_MAX_CLIPS: '6'
           STATUS_HQ_LONG_MAX_CLIPS: '6'
           STATUS_SOURCE_TIMEOUT_MS: '90000'
