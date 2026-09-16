@@ -1,0 +1,32 @@
+name: Status HQ Smoke
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/status-hq.js'
+      - 'src/downloader.js'
+      - 'src/tiktok*.js'
+      - 'scripts/status-hq-smoke.mjs'
+      - '.github/workflows/status-hq-smoke.yml'
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Process real TikTok link through Status HQ
+        env:
+          STATUS_TEST_URL: https://vt.tiktok.com/ZSgbsv3MX
+          STATUS_HQ_MAX_CLIPS: '6'
+          STATUS_HQ_LONG_MAX_CLIPS: '6'
+          STATUS_SOURCE_TIMEOUT_MS: '90000'
+          STATUS_ENCODE_TIMEOUT_MS: '180000'
+        run: node scripts/status-hq-smoke.mjs
