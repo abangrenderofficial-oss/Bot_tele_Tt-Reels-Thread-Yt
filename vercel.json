@@ -3,7 +3,7 @@
   "functions": {
     "api/*.js": {
       "includeFiles": "bin/**",
-      "maxDuration": 120
+      "maxDuration": 300
     }
   }
 }
