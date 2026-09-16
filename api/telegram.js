@@ -237,11 +237,10 @@ function emptyYouTubeMedia() {
   };
 }
 
-async function sendTikTokSlideshowChoice(chatId, url, media) {
-  const title = safeTitle(media, 'tiktok');
+async function sendTikTokSlideshowChoice(chatId, url) {
   await sendMessage(
     chatId,
-    `${title}\n\n🖼️ TikTok photo/slideshow dikesan.\nPilih output yang anda mahu:\n\n${url}`,
+    `🖼️ TikTok photo/slideshow dikesan.\nPilih output yang anda mahu:\n\n${url}`,
     {
       reply_markup: {
         inline_keyboard: [[
@@ -316,9 +315,7 @@ async function processTikTokSlideshowChoice(callbackQuery, baseUrl) {
   try {
     await sendChatAction(chatId, 'upload_video').catch(() => {});
     preparedVideo = await prepareTikTokSlideshowVideo(slideshow, configuredUploadLimit());
-    const caption = slideshow.title
-      ? `TikTok • ${slideshow.title}\n🎬 ${preparedVideo.quality}`.slice(0, 1024)
-      : `TikTok slideshow\n🎬 ${preparedVideo.quality}`;
+    const caption = `TikTok slideshow\n🎬 ${preparedVideo.quality}`;
     await sendVideoFileUpload(chatId, preparedVideo.filePath, caption);
   } catch (error) {
     console.error('TikTok slideshow video failed:', error?.code, error?.message);
@@ -382,7 +379,7 @@ async function processMessage(message, baseUrl) {
   }
 
   if (platform === 'tiktok' && Array.isArray(media.images) && media.images.length) {
-    await sendTikTokSlideshowChoice(chatId, url, media);
+    await sendTikTokSlideshowChoice(chatId, url);
     return;
   }
 
