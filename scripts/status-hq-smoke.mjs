@@ -74,6 +74,22 @@ function shortSnippet(text, index, radius = 220) {
   return text.slice(Math.max(0, index - radius), Math.min(text.length, index + radius)).replace(/\s+/g, ' ');
 }
 
+function traceJsAssignments(js, variable) {
+  const safe = variable.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const patterns = [
+    new RegExp(`(?:var|let|const)?\\s*${safe}\\s*=`, 'g'),
+    new RegExp(`${safe}\\s*\\+=`, 'g'),
+  ];
+  let shown = 0;
+  for (const pattern of patterns) {
+    for (const match of js.matchAll(pattern)) {
+      console.log('ssstik-js-var', variable, shortSnippet(js, match.index, 700));
+      shown += 1;
+      if (shown >= 6) return;
+    }
+  }
+}
+
 async function trySsstik(inputUrl) {
   const homeUrl = 'https://ssstik.io/en-1';
   const home = await fetch(homeUrl, {
@@ -116,10 +132,19 @@ async function trySsstik(inputUrl) {
         const hasNeedle = /\btt\b|abc\?url=dl|_gcaptcha_pt/i.test(js);
         console.log('ssstik-js', src, jsRes.status, 'bytes', js.length, 'interesting', hasNeedle);
         if (hasNeedle) {
-          for (const probe of ['abc?url=dl', '_gcaptcha_pt', 'tt:', 'tt=']) {
+          for (const probe of ['abc?url=dl', '_gcaptcha_pt', 'hx-vals', 's_furl', 'tt:', 'tt=']) {
             const idx = js.toLowerCase().indexOf(probe.toLowerCase());
-            if (idx >= 0) console.log('ssstik-js-probe', probe, shortSnippet(js, idx, 300));
+            if (idx >= 0) console.log('ssstik-js-probe', probe, shortSnippet(js, idx, probe === 'hx-vals' ? 1400 : 800));
           }
+          const hxIdx = js.indexOf('hx-vals');
+          if (hxIdx >= 0) {
+            const hxChunk = js.slice(hxIdx, Math.min(js.length, hxIdx + 1800));
+            console.log('ssstik-hx-chunk', hxChunk.replace(/\s+/g, ' '));
+            const plusVars = [...new Set([...hxChunk.matchAll(/\+([A-Za-z_$][\w$]*)\+/g)].map((m) => m[1]))];
+            console.log('ssstik-hx-vars', plusVars.join(','));
+            for (const variable of plusVars) traceJsAssignments(js, variable);
+          }
+          for (const variable of ['s_furl', 's_tt', 'tt']) traceJsAssignments(js, variable);
         }
         token =
           js.match(/\btt\s*:\s*['\"]([^'\"]+)['\"]/i)?.[1] ||
