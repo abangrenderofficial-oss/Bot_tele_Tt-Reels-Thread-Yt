@@ -37,6 +37,18 @@ function urlOrEmpty(value) {
   }
 }
 
+function durationFromVideoUrl(value) {
+  try {
+    const efg = new URL(value).searchParams.get('efg');
+    if (!efg) return null;
+    const payload = JSON.parse(Buffer.from(efg, 'base64url').toString('utf8'));
+    const duration = Number(payload?.duration_s || 0);
+    return Number.isFinite(duration) && duration > 0 ? duration : null;
+  } catch {
+    return null;
+  }
+}
+
 function targetCodeFromUrl(input) {
   try {
     const pathname = new URL(input).pathname;
@@ -105,22 +117,25 @@ function addMedia(media, result, itemIndex = 0) {
   const versions = Array.isArray(media.video_versions) ? media.video_versions : [];
   const fallbackWidth = Number(media.original_width || 0) || null;
   const fallbackHeight = Number(media.original_height || 0) || null;
+  const explicitDuration = Number(media.video_duration || media.duration || 0) || null;
   const videoSeen = new Set(result.videos.map((item) => item.url.split('?')[0]));
 
   for (const version of versions) {
     const url = urlOrEmpty(version?.url);
     if (!url) continue;
-    const path = url.split('?')[0];
-    if (videoSeen.has(path)) continue;
-    videoSeen.add(path);
+    const mediaPath = url.split('?')[0];
+    if (videoSeen.has(mediaPath)) continue;
+    videoSeen.add(mediaPath);
 
     const width = Number(version?.width || 0) || fallbackWidth;
     const height = Number(version?.height || 0) || fallbackHeight;
+    const duration = explicitDuration || durationFromVideoUrl(url);
     result.videos.push({
       url,
       quality: height ? `${height}p` : `video${itemIndex ? ` ${itemIndex + 1}` : ''}`,
       width,
       height,
+      duration,
       ext: 'mp4',
       hasAudio: media.has_audio !== false,
       source: 'threads-direct',
@@ -191,13 +206,14 @@ export async function parseThreadsPost(url) {
         platform: 'Threads',
         title: readMeta(html, ['og:title', 'twitter:title']) || 'Threads video',
         thumbnail: readMeta(html, ['og:image', 'twitter:image']) || '',
-        duration: null,
+        duration: durationFromVideoUrl(direct),
         images: [],
         videos: [{
           url: direct,
           quality: 'video',
           width: null,
           height: null,
+          duration: durationFromVideoUrl(direct),
           ext: 'mp4',
           hasAudio: true,
           source: 'threads-og',
@@ -234,12 +250,13 @@ export async function parseThreadsPost(url) {
   const title = (caption.split('\n')[0] || '').slice(0, 160)
     || (username ? `Video by ${username}` : 'Threads media');
   const thumbnail = bestImage(post)?.url || bestImage(carousel[0])?.url || '';
+  const duration = result.videos.find((item) => Number(item.duration || 0) > 0)?.duration || null;
 
   return {
     platform: 'Threads',
     title,
     thumbnail,
-    duration: null,
+    duration,
     images: result.images,
     videos: result.videos,
     audios: [],
