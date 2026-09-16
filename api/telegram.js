@@ -25,6 +25,8 @@ import {
 
 const TELEGRAM_URL_FETCH_MAX = 20 * 1024 * 1024;
 const TELEGRAM_CLOUD_UPLOAD_MAX = 50 * 1024 * 1024;
+const TT_SLIDE_SPLIT = 'ttslide:split:v2';
+const TT_SLIDE_VIDEO = 'ttslide:video:v2';
 
 const START_TEXT = [
   '📥 Social Downloader Bot',
@@ -244,8 +246,8 @@ async function sendTikTokSlideshowChoice(chatId, url) {
     {
       reply_markup: {
         inline_keyboard: [[
-          { text: '🖼️ Split • Image + Audio', callback_data: 'tt_slide_split' },
-          { text: '🎬 Video', callback_data: 'tt_slide_video' },
+          { text: '🖼️ Split • Image + Audio', callback_data: TT_SLIDE_SPLIT },
+          { text: '🎬 Video', callback_data: TT_SLIDE_VIDEO },
         ]],
       },
     },
@@ -263,53 +265,68 @@ async function disableChoiceButtons(callbackQuery) {
   }).catch(() => {});
 }
 
-async function processTikTokSlideshowChoice(callbackQuery, baseUrl) {
-  const action = callbackQuery?.data;
+async function resolveChoiceSource(callbackQuery) {
   const chatId = callbackQuery?.message?.chat?.id;
-  if (!chatId || !['tt_slide_split', 'tt_slide_video'].includes(action)) return;
-
-  await telegram('answerCallbackQuery', {
-    callback_query_id: callbackQuery.id,
-    text: action === 'tt_slide_video' ? 'Sedang bina video…' : 'Sedang sediakan image + audio…',
-  }).catch(() => {});
-  await disableChoiceButtons(callbackQuery);
-
   const sourceText = callbackQuery?.message?.text || callbackQuery?.message?.caption || '';
   const url = extractFirstUrl(sourceText);
   if (!url || detectPlatform(url) !== 'tiktok') {
-    await sendMessage(chatId, '❌ Link TikTok asal tak dapat dibaca. Hantar semula link slideshow itu.');
-    return;
+    if (chatId) await sendMessage(chatId, '❌ Link TikTok asal tak dapat dibaca. Hantar semula link slideshow itu.');
+    return null;
   }
 
-  let slideshow;
   try {
-    slideshow = await resolveTikTokSlideshow(url);
+    return await resolveTikTokSlideshow(url);
   } catch (error) {
     console.error('TikTok slideshow resolver failed:', error?.code, error?.message);
-    await sendMessage(chatId, '❌ Tak berjaya baca semula TikTok slideshow itu. Cuba hantar link sekali lagi.');
-    return;
+    if (chatId) await sendMessage(chatId, '❌ Tak berjaya baca semula TikTok slideshow itu. Cuba hantar link sekali lagi.');
+    return null;
   }
+}
 
-  if (action === 'tt_slide_split') {
-    let preparedSound = null;
-    try {
-      await sendChatAction(chatId, 'upload_photo').catch(() => {});
-      await deliverImages(chatId, slideshow.images, 'TikTok images', baseUrl);
+async function processTikTokSplit(callbackQuery, baseUrl) {
+  const chatId = callbackQuery?.message?.chat?.id;
+  if (!chatId) return;
 
-      await sendChatAction(chatId, 'upload_document').catch(() => {});
-      preparedSound = await prepareTikTokSound(slideshow.audio);
-      const soundLabel = slideshow.audio.performer
-        ? `🎵 ${slideshow.audio.title} • ${slideshow.audio.performer}`
-        : `🎵 ${slideshow.audio.title}`;
-      await sendTikTokSoundUpload(chatId, preparedSound, soundLabel);
-    } catch (error) {
-      console.error('TikTok slideshow split failed:', error?.code, error?.message);
-      await sendMessage(chatId, '❌ Gambar berjaya dibaca tetapi proses Image + Audio tak dapat disiapkan. Cuba semula.').catch(() => {});
-    } finally {
-      if (preparedSound?.cleanup) await preparedSound.cleanup().catch(() => {});
-    }
-    return;
+  console.info('TikTok slideshow action=split_v2');
+  await telegram('answerCallbackQuery', {
+    callback_query_id: callbackQuery.id,
+    text: 'Sedang sediakan gambar + audio berasingan…',
+  }).catch(() => {});
+  await disableChoiceButtons(callbackQuery);
+
+  const slideshow = await resolveChoiceSource(callbackQuery);
+  if (!slideshow) return;
+
+  let preparedSound = null;
+  try {
+    // SPLIT MODE MUST ONLY SEND PHOTOS + AUDIO. No MP4 renderer is called here.
+    await sendChatAction(chatId, 'upload_photo').catch(() => {});
+    await deliverImages(chatId, slideshow.images, 'TikTok images', baseUrl);
+
+    await sendChatAction(chatId, 'upload_document').catch(() => {});
+    preparedSound = await prepareTikTokSound(slideshow.audio);
+    await sendTikTokSoundUpload(chatId, preparedSound, `🎵 ${slideshow.audio.title}`);
+  } catch (error) {
+    console.error('TikTok slideshow split_v2 failed:', error?.code, error?.message);
+    await sendMessage(chatId, '❌ Proses Image + Audio tak dapat disiapkan. Cuba semula.').catch(() => {});
+  } finally {
+    if (preparedSound?.cleanup) await preparedSound.cleanup().catch(() => {});
   }
+}
+
+async function processTikTokVideo(callbackQuery) {
+  const chatId = callbackQuery?.message?.chat?.id;
+  if (!chatId) return;
+
+  console.info('TikTok slideshow action=video_v2');
+  await telegram('answerCallbackQuery', {
+    callback_query_id: callbackQuery.id,
+    text: 'Sedang bina video dengan ratio asal…',
+  }).catch(() => {});
+  await disableChoiceButtons(callbackQuery);
+
+  const slideshow = await resolveChoiceSource(callbackQuery);
+  if (!slideshow) return;
 
   let preparedVideo = null;
   try {
@@ -318,10 +335,21 @@ async function processTikTokSlideshowChoice(callbackQuery, baseUrl) {
     const caption = `TikTok slideshow\n🎬 ${preparedVideo.quality}`;
     await sendVideoFileUpload(chatId, preparedVideo.filePath, caption);
   } catch (error) {
-    console.error('TikTok slideshow video failed:', error?.code, error?.message);
+    console.error('TikTok slideshow video_v2 failed:', error?.code, error?.message);
     await sendMessage(chatId, '❌ Tak berjaya gabungkan slideshow + audio menjadi video. Cuba semula kemudian.');
   } finally {
     if (preparedVideo?.cleanup) await preparedVideo.cleanup().catch(() => {});
+  }
+}
+
+async function processTikTokSlideshowChoice(callbackQuery, baseUrl) {
+  const action = String(callbackQuery?.data || '');
+  if (action === TT_SLIDE_SPLIT) {
+    await processTikTokSplit(callbackQuery, baseUrl);
+    return;
+  }
+  if (action === TT_SLIDE_VIDEO) {
+    await processTikTokVideo(callbackQuery);
   }
 }
 
