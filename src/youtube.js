@@ -156,12 +156,16 @@ async function tryCobalt(inputUrl, failures) {
         signal: AbortSignal.timeout(18000),
       });
 
+      const raw = await response.text();
+      let data = null;
+      try { data = JSON.parse(raw); } catch {}
+
       if (!response.ok) {
-        failures.push(`cobalt:${host}:${response.status}`);
+        const detail = data?.error?.code || data?.code || raw.replace(/\s+/g, ' ').slice(0, 180) || 'empty';
+        failures.push(`cobalt:${host}:${response.status}:${detail}`);
         continue;
       }
 
-      const data = await response.json();
       if ((data?.status === 'tunnel' || data?.status === 'redirect') && data?.url) {
         return {
           platform: 'YouTube',
