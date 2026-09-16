@@ -414,7 +414,18 @@ export async function parseMedia(url) {
   }
 
   if (hostname === 'tiktok.com' || hostname.endsWith('.tiktok.com')) {
-    return parseTikTok(url);
+    try {
+      return await parseTikTok(url);
+    } catch (tikwmError) {
+      try {
+        const fallback = await parseWithYtDlp(url);
+        return { ...fallback, platform: 'TikTok' };
+      } catch (ytdlpError) {
+        const err = new Error(`TikWM: ${tikwmError?.message || tikwmError}; yt-dlp fallback: ${ytdlpError?.message || ytdlpError}`);
+        err.code = tikwmError?.code === 'NO_MEDIA' && ytdlpError?.code === 'NO_MEDIA' ? 'NO_MEDIA' : 'DOWNLOADER_ERROR';
+        throw err;
+      }
+    }
   }
 
   if (hostname === 'youtu.be' || hostname.endsWith('youtube.com')) {
