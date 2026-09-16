@@ -13,4 +13,7 @@ jobs:
         with:
           node-version: '22'
       - run: npm install
-      - run: node scripts/smoke-test.mjs
+      - name: Syntax check
+        run: npm run check
+      - name: Resolver smoke test
+        run: node scripts/smoke-test.mjs
