@@ -1,0 +1,31 @@
+name: Downloader Self Test
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  selftest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Wait for Vercel deployment
+        run: sleep 45
+
+      - name: Test downloader cases
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE='https://bot-tele-tt-reels-thread-yt.vercel.app/api/diagnostic'
+          for CASE in tiktok reels youtube threads; do
+            echo "=== $CASE ==="
+            OUT=''
+            for TRY in 1 2 3 4 5; do
+              OUT=$(curl -fsS --max-time 60 "$BASE?case=$CASE" || true)
+              echo "try=$TRY $OUT"
+              if echo "$OUT" | grep -q '"case"'; then break; fi
+              sleep 15
+            done
+            echo "$OUT" | grep -q '"ok":true' || exit 1
+          done
