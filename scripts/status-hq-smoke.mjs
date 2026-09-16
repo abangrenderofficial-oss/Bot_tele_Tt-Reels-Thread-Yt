@@ -5,6 +5,8 @@ const savedLink = process.env.STATUS_TEST_URL || 'https://vt.tiktok.com/ZSgbsv3M
 const controlLink = process.env.STATUS_CONTROL_URL || 'https://vt.tiktok.com/ZSqqYxc13/';
 const ua = 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_6 like Mac OS X) AppleWebKit/605.1.15 Version/18.0 Mobile/15E148 Safari/604.1';
 
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
 async function checkSavedLink(url) {
   try {
     const r = await fetch(url, {
@@ -23,9 +25,25 @@ async function checkSavedLink(url) {
   return { alive: true, canonical: url };
 }
 
+async function parseWithRetry(url, label) {
+  let lastError;
+  for (let attempt = 1; attempt <= 6; attempt += 1) {
+    try {
+      const media = await parseMedia(url);
+      console.log('PARSE_ATTEMPT_OK', label, attempt);
+      return media;
+    } catch (error) {
+      lastError = error;
+      console.log('PARSE_ATTEMPT_FAIL', label, attempt, error?.code, String(error?.message || error).slice(0, 500));
+      if (attempt < 6) await sleep(attempt * 2500);
+    }
+  }
+  throw lastError;
+}
+
 async function runStatus(url, label) {
   console.log('RUN_STATUS', label, url);
-  const media = await parseMedia(url);
+  const media = await parseWithRetry(url, label);
   console.log('MEDIA_OK', label, media?.platform, 'duration=', media?.duration, 'videos=', media?.videos?.length || 0);
   const best = chooseBestVideo(media?.videos || []);
   if (!best) throw new Error(`${label}: no video candidate`);
@@ -33,7 +51,7 @@ async function runStatus(url, label) {
   let prepared;
   try {
     prepared = await prepareWhatsAppStatusHQ({ sourceUrl: url, platform: 'tiktok', video: best });
-    console.log('STATUS_HQ_OK', label, prepared.quality, 'clips=', prepared.clips.length, 'profile=', prepared.profile?.mode);
+    console.log('STATUS_HQ_OK', label, prepared.quality, 'clips=', prepared.clips.length, 'profile=', prepared.profile?.mode, 'switched=', prepared.switchedForLength);
     for (const c of prepared.clips) {
       console.log('CLIP_OK', c.index, '/', c.count, 'duration=', c.duration, 'bytes=', c.size);
       if (!c.filePath || !c.size) throw new Error(`${label}: invalid generated clip`);
