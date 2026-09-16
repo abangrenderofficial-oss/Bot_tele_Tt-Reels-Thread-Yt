@@ -1,7 +1,7 @@
 import { parseMedia, chooseBestVideo } from '../src/downloader.js';
 import { prepareWhatsAppStatusHQ } from '../src/status-hq.js';
 
-const TEST_URL = 'https://vt.tiktok.com/ZSqqYxc13/';
+const TEST_URL = 'https://www.tiktok.com/@j_k_123_7/video/7654589734496341262';
 
 export default async function handler(req, res) {
   const started = Date.now();
