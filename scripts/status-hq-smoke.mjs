@@ -15,29 +15,40 @@ function absoluteUrl(value, base = 'https://www.tikwm.com') {
   try { return new URL(value, base).toString(); } catch { return ''; }
 }
 
-function normalizeSlbjs(payload) {
-  const data = payload?.data && typeof payload.data === 'object' ? payload.data : payload;
-  const direct = data?.download_url || data?.downloadUrl || data?.video_url || data?.videoUrl || data?.url || '';
-  if (!/^https?:\/\//i.test(String(direct))) return null;
-  const duration = Number(data?.duration || data?.author?.duration || data?.video?.duration || 0) || null;
+function videoMedia(direct, data = {}, headers = {}) {
   return {
     platform: 'TikTok',
     title: String(data?.title || ''),
-    duration,
+    duration: Number(data?.duration || data?.author?.duration || 0) || null,
     videos: [{
-      url: String(direct),
-      quality: 'HD',
-      width: Number(data?.width || 0) || null,
-      height: Number(data?.height || 0) || null,
-      ext: 'mp4',
-      hasAudio: true,
-      source: 'direct',
-      headers: { 'User-Agent': browserUA },
-      filesize: null,
+      url: String(direct), quality: 'HD', width: Number(data?.width || 0) || null,
+      height: Number(data?.height || 0) || null, ext: 'mp4', hasAudio: true,
+      source: 'direct', headers: { 'User-Agent': browserUA, ...headers }, filesize: null,
     }],
-    images: [],
-    audios: [],
+    images: [], audios: [],
   };
+}
+
+async function tryClipX(inputUrl) {
+  const endpoint = new URL('https://clipx.zamdev.workers.dev/');
+  endpoint.searchParams.set('url', inputUrl);
+  endpoint.searchParams.set('quality', 'best');
+  endpoint.searchParams.set('timeout', '60000');
+  endpoint.searchParams.set('meta', 'false');
+  const response = await fetch(endpoint, {
+    headers: { 'User-Agent': browserUA, Accept: 'application/json, text/plain, */*' },
+    redirect: 'follow', signal: AbortSignal.timeout(65000),
+  });
+  const text = await response.text();
+  console.log('clipx status', response.status, 'bytes', text.length, 'head', text.slice(0, 300));
+  if (!response.ok) throw new Error(`ClipX HTTP ${response.status}: ${text.slice(0, 180)}`);
+  let payload;
+  try { payload = JSON.parse(text); } catch { throw new Error('ClipX invalid JSON'); }
+  if (!payload?.success || !payload?.data) throw new Error(`ClipX failed: ${payload?.error || 'no data'}`);
+  const data = payload.data;
+  const direct = data?.video?.hd_mp4 || data?.video?.standard_mp4 || data?.video?.wmplay || '';
+  if (!/^https?:\/\//i.test(String(direct))) throw new Error('ClipX no direct video URL');
+  return videoMedia(direct, { title: data.title, duration: data.duration });
 }
 
 async function trySlbjs(inputUrl) {
@@ -45,17 +56,46 @@ async function trySlbjs(inputUrl) {
   endpoint.searchParams.set('down', inputUrl);
   const response = await fetch(endpoint, {
     headers: { 'User-Agent': browserUA, Accept: 'application/json, text/plain, */*' },
-    redirect: 'follow',
-    signal: AbortSignal.timeout(45000),
+    redirect: 'follow', signal: AbortSignal.timeout(45000),
   });
   const text = await response.text();
   console.log('slbjs status', response.status, 'bytes', text.length, 'head', text.slice(0, 300));
   if (!response.ok) throw new Error(`Slbjs HTTP ${response.status}`);
   let payload;
   try { payload = JSON.parse(text); } catch { throw new Error('Slbjs invalid JSON'); }
-  const media = normalizeSlbjs(payload);
-  if (!media) throw new Error(`Slbjs no video URL: ${text.slice(0, 500)}`);
-  return media;
+  const data = payload?.data && typeof payload.data === 'object' ? payload.data : payload;
+  const direct = data?.download_url || data?.downloadUrl || data?.video_url || data?.videoUrl || '';
+  if (!/^https?:\/\//i.test(String(direct))) throw new Error('Slbjs no direct video URL');
+  return videoMedia(direct, data);
+}
+
+async function trySsstik(inputUrl) {
+  const home = await fetch('https://ssstik.io/', {
+    headers: { 'User-Agent': browserUA, Accept: 'text/html,*/*' },
+    redirect: 'follow', signal: AbortSignal.timeout(30000),
+  });
+  const html = await home.text();
+  console.log('ssstik-home', home.status, 'bytes', html.length);
+  if (!home.ok) throw new Error(`SSSTik home HTTP ${home.status}`);
+  const token = html.match(/tt:\s*['\"]([\w\d]+)['\"]/i)?.[1];
+  if (!token) throw new Error('SSSTik token not found');
+  const body = new URLSearchParams({ id: inputUrl, locale: 'en', tt: token });
+  const response = await fetch('https://ssstik.io/abc?url=dl', {
+    method: 'POST',
+    headers: {
+      'User-Agent': browserUA, Accept: '*/*', 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+      'hx-current-url': 'https://ssstik.io/en-1', 'hx-request': 'true', 'hx-target': 'target',
+      'hx-trigger': '_gcaptcha_pt', Origin: 'https://ssstik.io', Referer: 'https://ssstik.io/en-1',
+    },
+    body, redirect: 'follow', signal: AbortSignal.timeout(45000),
+  });
+  const text = await response.text();
+  console.log('ssstik-post', response.status, 'bytes', text.length, 'head', text.slice(0, 220));
+  if (!response.ok) throw new Error(`SSSTik HTTP ${response.status}`);
+  const hrefs = [...text.matchAll(/href=["']([^"']+)["']/gi)].map((m) => m[1]);
+  const direct = hrefs.find((v) => /^https?:\/\//i.test(v) && /\.mp4|video|ssscdn|tikcdn|tiktokcdn/i.test(v)) || '';
+  if (!direct) throw new Error(`SSSTik no video URL; hrefs=${hrefs.slice(0, 6).join(',')}`);
+  return videoMedia(direct, { title: 'TikTok' }, { Referer: 'https://ssstik.io/' });
 }
 
 async function tryTikwmPost(inputUrl) {
@@ -66,15 +106,10 @@ async function tryTikwmPost(inputUrl) {
       const response = await fetch(endpoint, {
         method: 'POST',
         headers: {
-          'User-Agent': browserUA,
-          Accept: 'application/json, text/plain, */*',
-          'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-          Origin: 'https://www.tikwm.com',
-          Referer: 'https://www.tikwm.com/',
+          'User-Agent': browserUA, Accept: 'application/json, text/plain, */*',
+          'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8', Origin: 'https://www.tikwm.com', Referer: 'https://www.tikwm.com/',
         },
-        body,
-        redirect: 'follow',
-        signal: AbortSignal.timeout(30000),
+        body, redirect: 'follow', signal: AbortSignal.timeout(30000),
       });
       const text = await response.text();
       console.log('tikwm-post', endpoint, 'status', response.status, 'bytes', text.length, 'head', text.slice(0, 160));
@@ -84,14 +119,7 @@ async function tryTikwmPost(inputUrl) {
       const data = payload.data;
       const direct = absoluteUrl(data.hdplay || data.play);
       if (!direct) { failures.push(`${endpoint}:no-video`); continue; }
-      return {
-        platform: 'TikTok', title: data.title || '', duration: Number(data.duration || 0) || null,
-        videos: [{
-          url: direct, quality: data.hdplay ? 'HD' : 'No watermark', width: data.width ?? null,
-          height: data.height ?? null, ext: 'mp4', hasAudio: true, source: 'direct',
-          headers: { 'User-Agent': browserUA, Referer: 'https://www.tikwm.com/' }, filesize: null,
-        }], images: [], audios: [],
-      };
+      return videoMedia(direct, data, { Referer: 'https://www.tikwm.com/' });
     } catch (error) { failures.push(`${endpoint}:${error?.message || error}`); }
   }
   throw new Error(`TikWM POST failed: ${failures.join(', ')}`);
@@ -102,18 +130,11 @@ async function tryYtDlp(inputUrl) {
   await chmod(binary, 0o755).catch(() => {});
   try {
     const { stdout } = await execFileAsync(binary, [
-      '--dump-single-json', '--skip-download', '--no-warnings', '--no-playlist',
-      '--no-check-certificates', '--user-agent', browserUA, '--', inputUrl,
-    ], {
-      timeout: 60000,
-      maxBuffer: 16 * 1024 * 1024,
-      env: { ...process.env, PATH: `${path.dirname(process.execPath)}:${process.env.PATH || ''}` },
-    });
+      '--dump-single-json', '--skip-download', '--no-warnings', '--no-playlist', '--no-check-certificates', '--user-agent', browserUA, '--', inputUrl,
+    ], { timeout: 60000, maxBuffer: 16 * 1024 * 1024, env: { ...process.env, PATH: `${path.dirname(process.execPath)}:${process.env.PATH || ''}` } });
     const info = JSON.parse(stdout);
     console.log('yt-dlp TikTok ok', { id: info.id, duration: info.duration, formats: info.formats?.length || 0 });
-  } catch (error) {
-    console.log('yt-dlp TikTok failed', String(error?.stderr || error?.message || error).slice(0, 1500));
-  }
+  } catch (error) { console.log('yt-dlp TikTok failed', String(error?.stderr || error?.message || error).slice(0, 1500)); }
 }
 
 try {
@@ -130,14 +151,24 @@ try {
   console.log('parseMedia provider ok');
 } catch (error) {
   console.log('parseMedia failed', error?.code, error?.message);
-  try {
-    media = await trySlbjs(url);
-    console.log('Slbjs fallback ok');
-  } catch (slbError) {
-    console.log('Slbjs failed', slbError?.message || slbError);
-    media = await tryTikwmPost(url);
-    console.log('TikWM POST fallback ok');
+  const providers = [
+    ['ClipX', tryClipX],
+    ['Slbjs', trySlbjs],
+    ['SSSTik', trySsstik],
+    ['TikWM POST', tryTikwmPost],
+  ];
+  let lastError = error;
+  for (const [name, fn] of providers) {
+    try {
+      media = await fn(url);
+      console.log(`${name} fallback ok`);
+      break;
+    } catch (providerError) {
+      console.log(`${name} failed`, providerError?.message || providerError);
+      lastError = providerError;
+    }
   }
+  if (!media) throw lastError;
 }
 
 console.log('platform', media?.platform, 'duration', media?.duration, 'videos', media?.videos?.length || 0);
