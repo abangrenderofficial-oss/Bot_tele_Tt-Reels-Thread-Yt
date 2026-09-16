@@ -2,6 +2,7 @@ const PLATFORM_RULES = [
   { platform: 'tiktok', hosts: ['tiktok.com', 'www.tiktok.com', 'vm.tiktok.com', 'vt.tiktok.com'] },
   { platform: 'instagram', hosts: ['instagram.com', 'www.instagram.com'] },
   { platform: 'threads', hosts: ['threads.net', 'www.threads.net', 'threads.com', 'www.threads.com'] },
+  { platform: 'twitter', hosts: ['x.com', 'twitter.com', 't.co'] },
   { platform: 'youtube', hosts: ['youtube.com', 'www.youtube.com', 'm.youtube.com', 'youtu.be', 'music.youtube.com'] },
 ];
 
@@ -26,6 +27,7 @@ export function platformLabel(platform) {
     tiktok: 'TikTok',
     instagram: 'Instagram',
     threads: 'Threads',
+    twitter: 'X / Twitter',
     youtube: 'YouTube',
   }[platform] ?? 'Media';
 }
