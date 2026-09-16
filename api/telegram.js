@@ -1,5 +1,6 @@
 import { parseMedia, chooseBestVideo, needsCustomHeaders } from '../src/downloader.js';
 import { parseThreadsPost } from '../src/threads.js';
+import { parseTwitterVideo } from '../src/twitter.js';
 import { prepareSocialVideoTelegramUpload } from '../src/social-video.js';
 import { prepareYouTubeTelegramUpload } from '../src/youtube-upload.js';
 import { detectPlatform, extractFirstUrl, platformLabel } from '../src/platform.js';
@@ -256,9 +257,9 @@ async function processMessage(message, baseUrl) {
   let media;
   let initialDownloaderError = null;
   try {
-    media = platform === 'threads'
-      ? await parseThreadsPost(url)
-      : await parseMedia(url);
+    if (platform === 'threads') media = await parseThreadsPost(url);
+    else if (platform === 'twitter') media = await parseTwitterVideo(url);
+    else media = await parseMedia(url);
   } catch (error) {
     console.error('Downloader error:', error?.code, error?.message);
 
