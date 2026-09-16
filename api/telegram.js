@@ -1,13 +1,19 @@
 import { parseMedia, chooseBestVideo, needsCustomHeaders } from '../src/downloader.js';
+import { parseThreadsPost } from '../src/threads.js';
 import { detectPlatform, extractFirstUrl, platformLabel } from '../src/platform.js';
+import { createRelayUrl } from '../src/relay.js';
 import {
   sendChatAction,
   sendDownloadButton,
   sendMediaGroup,
   sendMessage,
   sendPhotoUrl,
+  sendVideoUpload,
   sendVideoUrl,
 } from '../src/telegram.js';
+
+const TELEGRAM_URL_FETCH_MAX = 20 * 1024 * 1024;
+const TELEGRAM_CLOUD_UPLOAD_MAX = 50 * 1024 * 1024;
 
 const START_TEXT = [
   '📥 Social Downloader Bot',
@@ -18,7 +24,7 @@ const START_TEXT = [
   '• Threads',
   '• YouTube / Shorts',
   '',
-  'Bot akan cuba hantar media terus dalam chat. Jika fail kerana had Telegram atau link media perlukan header khas, bot akan beri butang download terus.',
+  'Bot akan cuba hantar media terus dalam chat. Untuk CDN yang perlukan header khas, bot akan relay media melalui server sendiri dan cuba upload terus ke Telegram.',
   '',
   'Gunakan hanya untuk media yang anda miliki atau dibenarkan untuk dimuat turun.',
 ].join('\n');
@@ -33,9 +39,27 @@ function isAuthorizedWebhook(req) {
   return req.headers['x-telegram-bot-api-secret-token'] === expected;
 }
 
+function requestBaseUrl(req) {
+  if (process.env.PUBLIC_BASE_URL) return String(process.env.PUBLIC_BASE_URL).replace(/\/$/, '');
+  const forwardedHost = String(req.headers['x-forwarded-host'] || req.headers.host || '').split(',')[0].trim();
+  if (!forwardedHost) return '';
+  const proto = String(req.headers['x-forwarded-proto'] || 'https').split(',')[0].trim() || 'https';
+  return `${proto}://${forwardedHost}`;
+}
+
 function safeTitle(media, platform) {
   const title = String(media?.title || '').trim();
   return title ? `${platformLabel(platform)} • ${title}`.slice(0, 900) : `${platformLabel(platform)} download`;
+}
+
+function relayItem(baseUrl, item) {
+  if (!baseUrl || !item?.url) return null;
+  try {
+    return { ...item, url: createRelayUrl(baseUrl, item), headers: null };
+  } catch (error) {
+    console.warn('Relay URL unavailable:', error?.message);
+    return null;
+  }
 }
 
 async function sendImageFallback(chatId, images, title) {
@@ -43,21 +67,25 @@ async function sendImageFallback(chatId, images, title) {
     { text: `⬇️ Download image ${index + 1}`, url: image.url },
   ]);
 
-  await sendMessage(chatId, `${title}\n\nTelegram tak dapat fetch album ini secara terus. Guna butang di bawah:`, {
+  await sendMessage(chatId, `${title}\n\nTelegram tak dapat masukkan album ini terus dalam chat. Guna butang di bawah:`, {
     reply_markup: { inline_keyboard: buttons },
   });
 }
 
-async function deliverImages(chatId, images, title) {
-  const direct = images.filter((item) => !needsCustomHeaders(item));
-  if (!direct.length || direct.length !== images.length) {
+async function deliverImages(chatId, images, title, baseUrl) {
+  const prepared = images.map((item) => {
+    if (!needsCustomHeaders(item)) return item;
+    return relayItem(baseUrl, item);
+  });
+
+  if (prepared.some((item) => !item)) {
     await sendImageFallback(chatId, images, title);
     return;
   }
 
-  if (direct.length === 1) {
+  if (prepared.length === 1) {
     try {
-      await sendPhotoUrl(chatId, direct[0].url, title);
+      await sendPhotoUrl(chatId, prepared[0].url, title);
       return;
     } catch {
       await sendImageFallback(chatId, images, title);
@@ -65,8 +93,8 @@ async function deliverImages(chatId, images, title) {
     }
   }
 
-  for (let offset = 0; offset < direct.length; offset += 10) {
-    const chunk = direct.slice(offset, offset + 10).map((item, index) => ({
+  for (let offset = 0; offset < prepared.length; offset += 10) {
+    const chunk = prepared.slice(offset, offset + 10).map((item, index) => ({
       type: 'photo',
       media: item.url,
       ...(offset === 0 && index === 0 ? { caption: title } : {}),
@@ -81,33 +109,67 @@ async function deliverImages(chatId, images, title) {
   }
 }
 
-async function deliverVideo(chatId, video, title) {
-  if (!video) return false;
+function configuredUploadLimit() {
+  const custom = Number(process.env.TELEGRAM_UPLOAD_MAX_MB || 0);
+  if (Number.isFinite(custom) && custom > 0) return Math.floor(custom * 1024 * 1024);
+  return TELEGRAM_CLOUD_UPLOAD_MAX;
+}
 
-  if (needsCustomHeaders(video)) {
-    await sendDownloadButton(
-      chatId,
-      `${title}\n\nMedia ini perlukan request header khas, jadi Telegram tak boleh fetch terus.`,
-      video.url,
-      `⬇️ Download ${video.quality || 'video'}`,
-    );
-    return true;
+function orderedVideoCandidates(videos = []) {
+  const pool = videos.filter((item) => item?.url);
+  const ordered = [];
+  while (pool.length) {
+    const best = chooseBestVideo(pool);
+    if (!best) break;
+    ordered.push(best);
+    const index = pool.indexOf(best);
+    if (index >= 0) pool.splice(index, 1);
+    else break;
+  }
+
+  const limit = configuredUploadLimit();
+  const likelySendable = ordered.filter((item) => !item.filesize || Number(item.filesize) <= limit);
+  const knownTooLarge = ordered.filter((item) => item.filesize && Number(item.filesize) > limit);
+  return [...likelySendable, ...knownTooLarge];
+}
+
+async function deliverVideo(chatId, video, title, baseUrl) {
+  if (!video?.url) return false;
+
+  const size = Number(video.filesize || 0);
+  const customHeaders = needsCustomHeaders(video);
+  const relay = relayItem(baseUrl, video);
+
+  // Telegram's cloud Bot API can fetch an HTTP URL only up to 20 MB.
+  // If the size is known to be larger, skip this step and upload the bytes.
+  if (!size || size <= TELEGRAM_URL_FETCH_MAX) {
+    const fetchUrl = customHeaders ? relay?.url : video.url;
+    if (fetchUrl) {
+      try {
+        await sendVideoUrl(chatId, fetchUrl, title);
+        return true;
+      } catch (error) {
+        console.warn('Telegram URL fetch failed, trying server upload:', error?.message);
+      }
+    }
+  }
+
+  const uploadLimit = configuredUploadLimit();
+  if (size && size > uploadLimit) {
+    console.warn(`Skipping ${video.quality || 'video'}: known size ${size} exceeds Telegram upload limit ${uploadLimit}.`);
+    return false;
   }
 
   try {
-    await sendVideoUrl(chatId, video.url, title);
+    await sendVideoUpload(chatId, video, title);
+    return true;
   } catch (error) {
-    await sendDownloadButton(
-      chatId,
-      `${title}\n\nTelegram tak dapat masukkan fail ini terus dalam chat (selalunya sebab saiz/format/CDN).`,
-      video.url,
-      `⬇️ Download ${video.quality || 'video'}`,
-    );
+    console.warn('Telegram server upload failed:', error?.code, error?.message);
+    return false;
   }
-  return true;
 }
 
-async function processMessage(message) {
+async function processMessage(message, baseUrl) {
   const chatId = message?.chat?.id;
   const text = message?.text || message?.caption || '';
   if (!chatId) return;
@@ -134,7 +196,9 @@ async function processMessage(message) {
 
   let media;
   try {
-    media = await parseMedia(url);
+    media = platform === 'threads'
+      ? await parseThreadsPost(url)
+      : await parseMedia(url);
   } catch (error) {
     console.error('Downloader error:', error?.code, error?.message);
 
@@ -153,19 +217,37 @@ async function processMessage(message) {
   }
 
   const title = safeTitle(media, platform);
-  const video = chooseBestVideo(media.videos);
+  const candidates = orderedVideoCandidates(media.videos);
+  let videoSent = false;
 
-  if (video) {
+  if (candidates.length) {
     await sendChatAction(chatId, 'upload_video').catch(() => {});
-    await deliverVideo(chatId, video, title);
+    for (const candidate of candidates.slice(0, 6)) {
+      if (await deliverVideo(chatId, candidate, title, baseUrl)) {
+        videoSent = true;
+        break;
+      }
+    }
+
+    if (!videoSent) {
+      const best = chooseBestVideo(media.videos);
+      if (best) {
+        await sendDownloadButton(
+          chatId,
+          `${title}\n\nBot dah cuba direct URL, relay dan server upload, tapi fail ini masih melebihi had Telegram cloud atau CDN menolak transfer.`,
+          best.url,
+          `⬇️ Download ${best.quality || 'video'}`,
+        );
+      }
+    }
   }
 
   if (media.images.length) {
     await sendChatAction(chatId, 'upload_photo').catch(() => {});
-    await deliverImages(chatId, media.images, video ? `${platformLabel(platform)} images` : title);
+    await deliverImages(chatId, media.images, videoSent ? `${platformLabel(platform)} images` : title, baseUrl);
   }
 
-  if (!video && !media.images.length && media.audios.length) {
+  if (!candidates.length && !media.images.length && media.audios.length) {
     const audio = media.audios[0];
     await sendDownloadButton(chatId, `${title}\n\nAudio tersedia:`, audio.url, '🎵 Download audio');
   }
@@ -188,7 +270,7 @@ export default async function handler(req, res) {
   try {
     const update = typeof req.body === 'string' ? JSON.parse(req.body) : req.body;
     const message = update?.message ?? update?.edited_message;
-    if (message) await processMessage(message);
+    if (message) await processMessage(message, requestBaseUrl(req));
     return json(res, 200, { ok: true });
   } catch (error) {
     console.error('Webhook error:', error);
