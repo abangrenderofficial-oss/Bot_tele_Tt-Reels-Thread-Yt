@@ -1,5 +1,4 @@
 import { parseMedia, chooseBestVideo } from '../src/downloader.js';
-import { parseYouTubeFree } from '../src/youtube.js';
 
 const CASES = {
   reels: 'https://www.instagram.com/reel/DdVLsscjj2o/?stkn=MXV3a2hncmE3cWZheQ==',
@@ -42,7 +41,7 @@ export default async function handler(req, res) {
 
   const started = Date.now();
   try {
-    const media = key === 'youtube' ? await parseYouTubeFree(url) : await parseMedia(url);
+    const media = await parseMedia(url);
     const best = chooseBestVideo(media.videos);
     const firstMedia = best || media.images?.[0] || media.audios?.[0] || null;
     const probe = await probeMedia(firstMedia);
@@ -60,6 +59,7 @@ export default async function handler(req, res) {
         quality: best.quality || '',
         ext: best.ext || '',
         hasAudio: best.hasAudio !== false,
+        source: best.source || '',
         needsHeaders: !!best.headers && Object.keys(best.headers).length > 0,
         urlHost: (() => { try { return new URL(best.url).host; } catch { return ''; } })(),
       } : null,
@@ -71,7 +71,7 @@ export default async function handler(req, res) {
       case: key,
       ms: Date.now() - started,
       code: error?.code || 'ERROR',
-      error: String(error?.message || error).slice(0, 1600),
+      error: String(error?.message || error).slice(0, 1800),
     });
   }
 }
