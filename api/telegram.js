@@ -21,14 +21,15 @@ const TELEGRAM_CLOUD_UPLOAD_MAX = 50 * 1024 * 1024;
 const START_TEXT = [
   '📥 Social Downloader Bot',
   '',
-  'Hantar link public daripada:',
+  'Hantar link daripada:',
   '• TikTok',
   '• Instagram Reels / Post',
   '• Threads',
-  '• YouTube / Shorts',
+  '• X / Twitter video',
+  '• YouTube / Shorts / Unlisted',
   '',
-  'YouTube: bot utamakan 1080p, kemudian 720p, kemudian 480p. Jika video dan audio berasingan, bot akan merge dahulu sebelum hantar ke Telegram.',
-  'TikTok / Instagram / Threads: jika video melebihi had Telegram, bot akan cuba compress HQ dahulu sambil mengekalkan aspect ratio asal.',
+  'YouTube: bot support video public dan unlisted yang boleh dibuka menggunakan link. Bot utamakan 1080p, kemudian 720p, kemudian 480p. Jika video dan audio berasingan, bot akan merge dahulu sebelum hantar ke Telegram.',
+  'TikTok / Instagram / Threads / X: jika video melebihi had Telegram, bot akan cuba compress HQ dahulu sambil mengekalkan aspect ratio asal.',
   '',
   'Bot akan cuba hantar media terus dalam chat. Untuk CDN yang perlukan header khas, bot akan relay media melalui server sendiri dan cuba upload terus ke Telegram.',
   '',
@@ -215,6 +216,18 @@ async function deliverPreferredYouTube(chatId, url, title) {
   }
 }
 
+function emptyYouTubeMedia() {
+  return {
+    platform: 'YouTube',
+    title: '',
+    thumbnail: '',
+    duration: null,
+    images: [],
+    videos: [],
+    audios: [],
+  };
+}
+
 async function processMessage(message, baseUrl) {
   const chatId = message?.chat?.id;
   const text = message?.text || message?.caption || '';
@@ -228,19 +241,20 @@ async function processMessage(message, baseUrl) {
 
   const url = extractFirstUrl(text);
   if (!url) {
-    await sendMessage(chatId, 'Hantar satu link TikTok, Instagram, Threads atau YouTube.');
+    await sendMessage(chatId, 'Hantar satu link TikTok, Instagram, Threads, X/Twitter atau YouTube.');
     return;
   }
 
   const platform = detectPlatform(url);
   if (!platform) {
-    await sendMessage(chatId, 'Link ni belum disokong. Buat masa sekarang: TikTok, Instagram, Threads dan YouTube.');
+    await sendMessage(chatId, 'Link ni belum disokong. Buat masa sekarang: TikTok, Instagram, Threads, X/Twitter dan YouTube.');
     return;
   }
 
   await sendChatAction(chatId, 'typing').catch(() => {});
 
   let media;
+  let initialDownloaderError = null;
   try {
     media = platform === 'threads'
       ? await parseThreadsPost(url)
@@ -248,18 +262,26 @@ async function processMessage(message, baseUrl) {
   } catch (error) {
     console.error('Downloader error:', error?.code, error?.message);
 
-    if (error?.code === 'DOWNLOADER_NOT_CONFIGURED') {
-      await sendMessage(chatId, '⚙️ Bot downloader belum lengkap dikonfigurasi oleh admin.');
+    // For YouTube, do not stop here. The preferred yt-dlp + FFmpeg pipeline
+    // can still download an unlisted video even when the lightweight metadata
+    // resolver or public fallback cannot see it.
+    if (platform === 'youtube') {
+      initialDownloaderError = error;
+      media = emptyYouTubeMedia();
+    } else {
+      if (error?.code === 'DOWNLOADER_NOT_CONFIGURED') {
+        await sendMessage(chatId, '⚙️ Bot downloader belum lengkap dikonfigurasi oleh admin.');
+        return;
+      }
+
+      if (error?.code === 'NO_MEDIA') {
+        await sendMessage(chatId, 'Tak jumpa video/media yang boleh dimuat turun. Pastikan post itu boleh diakses dan masih wujud.');
+        return;
+      }
+
+      await sendMessage(chatId, '❌ Tak berjaya proses link tu. Cuba link asal atau cuba semula kemudian.');
       return;
     }
-
-    if (error?.code === 'NO_MEDIA') {
-      await sendMessage(chatId, 'Tak jumpa media yang boleh dimuat turun. Pastikan post itu public dan masih wujud.');
-      return;
-    }
-
-    await sendMessage(chatId, '❌ Tak berjaya proses link tu. Cuba link public yang asal atau cuba semula kemudian.');
-    return;
   }
 
   const title = safeTitle(media, platform);
@@ -294,6 +316,18 @@ async function processMessage(message, baseUrl) {
         );
       }
     }
+  }
+
+  if (platform === 'youtube' && !videoSent && !candidates.length) {
+    const detail = String(initialDownloaderError?.message || '');
+    const loginRequired = /private|sign in|login|members.only|authentication|cookies/i.test(detail);
+    await sendMessage(
+      chatId,
+      loginRequired
+        ? '❌ Video ini perlukan login/permission akaun. Video YouTube unlisted biasa yang boleh dibuka oleh sesiapa dengan link adalah disokong, tetapi private atau account-restricted tidak boleh diambil tanpa akses akaun.'
+        : '❌ YouTube tak dapat dimuat turun kali ini. Video public dan unlisted yang boleh dibuka menggunakan link adalah disokong; cuba pastikan link penuh masih aktif.',
+    );
+    return;
   }
 
   if (media.images.length) {
