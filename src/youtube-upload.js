@@ -11,14 +11,17 @@ const execFileAsync = promisify(execFile);
 const QUALITY_PROFILES = [
   {
     label: '1080p',
+    maxDimension: 1920,
     selector: 'bestvideo[ext=mp4][height<=1080][height>720]+bestaudio[ext=m4a]/best[ext=mp4][height<=1080][height>720]',
   },
   {
     label: '720p',
+    maxDimension: 1280,
     selector: 'bestvideo[ext=mp4][height<=720][height>480]+bestaudio[ext=m4a]/best[ext=mp4][height<=720][height>480]',
   },
   {
     label: '480p',
+    maxDimension: 854,
     selector: 'bestvideo[ext=mp4][height<=480]+bestaudio[ext=m4a]/best[ext=mp4][height<=480]',
   },
 ];
@@ -84,6 +87,7 @@ async function probe(url, profile) {
     return {
       info,
       estimatedSize: selectedSize(info),
+      duration: Number(info?.duration || 0),
       title: String(info?.title || ''),
     };
   } catch (error) {
@@ -132,12 +136,105 @@ async function download(url, profile, outputBase) {
   throw err;
 }
 
+function compressionPlan(durationSeconds, maxBytes, sourceProfile) {
+  const duration = Number(durationSeconds || 0);
+  if (!Number.isFinite(duration) || duration <= 0) return null;
+
+  // Leave headroom for MP4 container overhead and bitrate variance.
+  const targetBytes = Math.floor(maxBytes * 0.90);
+  const audioKbps = duration > 10 * 60 ? 96 : 128;
+  const totalKbps = Math.floor((targetBytes * 8) / duration / 1000);
+  const videoKbps = totalKbps - audioKbps - 24;
+
+  // Below this point it is no longer reasonable to call the result HQ.
+  if (!Number.isFinite(videoKbps) || videoKbps < 350) return null;
+
+  let desiredDimension;
+  let label;
+  if (videoKbps >= 2200) {
+    desiredDimension = 1920;
+    label = '1080p';
+  } else if (videoKbps >= 1000) {
+    desiredDimension = 1280;
+    label = '720p';
+  } else {
+    desiredDimension = 854;
+    label = '480p';
+  }
+
+  const maxDimension = Math.min(sourceProfile.maxDimension, desiredDimension);
+  if (maxDimension <= 854) label = '480p';
+  else if (maxDimension <= 1280) label = '720p';
+  else label = '1080p';
+
+  return {
+    targetBytes,
+    audioKbps,
+    videoKbps,
+    maxDimension,
+    label,
+  };
+}
+
+async function compressForTelegram(inputPath, outputPath, plan) {
+  await rm(outputPath, { force: true }).catch(() => {});
+
+  const maxRate = Math.max(plan.videoKbps, Math.floor(plan.videoKbps * 1.08));
+  const bufferSize = Math.max(plan.videoKbps * 2, 700);
+  const scale = `scale=${plan.maxDimension}:${plan.maxDimension}:force_original_aspect_ratio=decrease:force_divisible_by=2:flags=lanczos`;
+
+  const args = [
+    '-y',
+    '-i', inputPath,
+    '-map', '0:v:0',
+    '-map', '0:a:0?',
+    '-vf', scale,
+    '-c:v', 'libx264',
+    '-preset', String(process.env.YOUTUBE_COMPRESS_PRESET || 'veryfast'),
+    '-profile:v', 'high',
+    '-pix_fmt', 'yuv420p',
+    '-b:v', `${plan.videoKbps}k`,
+    '-maxrate', `${maxRate}k`,
+    '-bufsize', `${bufferSize}k`,
+    '-c:a', 'aac',
+    '-b:a', `${plan.audioKbps}k`,
+    '-ac', '2',
+    '-movflags', '+faststart',
+    '-map_metadata', '-1',
+    outputPath,
+  ];
+
+  await execFileAsync(
+    ffmpegPath,
+    args,
+    commandOptions(Number(process.env.YOUTUBE_COMPRESS_TIMEOUT_MS || 45000)),
+  );
+
+  const fileStat = await stat(outputPath);
+  if (!fileStat.isFile()) {
+    const err = new Error('FFmpeg compression completed but no output file was created.');
+    err.code = 'YOUTUBE_COMPRESS_OUTPUT_MISSING';
+    throw err;
+  }
+
+  return { filePath: outputPath, size: fileStat.size };
+}
+
+async function cleanupOutputBase(outputBase) {
+  const suffixes = [
+    '.mp4', '.mkv', '.webm', '.m4a', '.part',
+    '-compressed.mp4',
+  ];
+  await Promise.all(suffixes.map((suffix) => rm(`${outputBase}${suffix}`, { force: true }).catch(() => {})));
+}
+
 export async function prepareYouTubeTelegramUpload(url, maxBytes) {
   const limit = Number(maxBytes || 0);
   if (!Number.isFinite(limit) || limit <= 0) throw new Error('A valid Telegram upload limit is required.');
 
   const attemptId = randomUUID();
   const outputBase = path.join(tmpdir(), `ar-youtube-${attemptId}`);
+  const compressedPath = `${outputBase}-compressed.mp4`;
   let lastError = null;
 
   for (const profile of QUALITY_PROFILES) {
@@ -150,36 +247,63 @@ export async function prepareYouTubeTelegramUpload(url, maxBytes) {
     }
     if (!probeResult) continue;
 
-    if (probeResult.estimatedSize && probeResult.estimatedSize > limit) {
-      console.info(`YouTube ${profile.label} skipped: estimated ${probeResult.estimatedSize} > ${limit}.`);
+    const expectedCompression = probeResult.estimatedSize > limit
+      ? compressionPlan(probeResult.duration, limit, profile)
+      : null;
+
+    if (probeResult.estimatedSize > limit && !expectedCompression) {
+      console.info(`YouTube ${profile.label} is over the Telegram limit and cannot be compressed to HQ within the limit.`);
       continue;
     }
 
     try {
       const result = await download(url, profile, outputBase);
-      if (result.size > limit) {
-        console.info(`YouTube ${profile.label} skipped after download: ${result.size} > ${limit}.`);
+
+      if (result.size <= limit) {
+        return {
+          ...result,
+          quality: profile.label,
+          title: probeResult.title,
+          compressed: false,
+          cleanup: async () => cleanupOutputBase(outputBase),
+        };
+      }
+
+      const plan = compressionPlan(probeResult.duration, limit, profile);
+      if (!plan) {
+        console.info(`YouTube ${profile.label} downloaded at ${result.size} bytes but HQ compression is not viable.`);
         await rm(result.filePath, { force: true }).catch(() => {});
         continue;
       }
 
+      console.info(
+        `Compressing YouTube ${profile.label}: ${result.size} bytes -> target <= ${plan.targetBytes} bytes, ` +
+        `${plan.videoKbps}k video + ${plan.audioKbps}k audio, maxDimension=${plan.maxDimension}.`,
+      );
+
+      const compressed = await compressForTelegram(result.filePath, compressedPath, plan);
+      await rm(result.filePath, { force: true }).catch(() => {});
+
+      if (compressed.size > limit) {
+        console.info(`Compressed YouTube output still exceeds Telegram limit: ${compressed.size} > ${limit}.`);
+        await rm(compressed.filePath, { force: true }).catch(() => {});
+        continue;
+      }
+
       return {
-        ...result,
-        quality: profile.label,
+        ...compressed,
+        quality: `${plan.label} • compressed HQ`,
         title: probeResult.title,
-        cleanup: async () => {
-          await rm(result.filePath, { force: true }).catch(() => {});
-        },
+        compressed: true,
+        cleanup: async () => cleanupOutputBase(outputBase),
       };
     } catch (error) {
       lastError = error;
-      for (const extension of ['mp4', 'mkv', 'webm', 'm4a', 'part']) {
-        await rm(`${outputBase}.${extension}`, { force: true }).catch(() => {});
-      }
+      await cleanupOutputBase(outputBase);
     }
   }
 
-  const err = new Error(lastError?.message || 'No 1080p/720p/480p YouTube version fits the Telegram upload limit.');
+  const err = new Error(lastError?.message || 'No YouTube version can be delivered within the Telegram upload limit at acceptable quality.');
   err.code = 'YOUTUBE_NO_SENDABLE_QUALITY';
   throw err;
 }
