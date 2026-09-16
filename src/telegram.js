@@ -98,7 +98,11 @@ export async function telegram(method, payload = {}) {
 }
 
 export async function sendMessage(chatId, text, extra = {}) {
-  if (String(text).includes('TikTok photo/slideshow dikesan')) {
+  const interactiveText = String(text);
+  if (
+    interactiveText.includes('TikTok photo/slideshow dikesan') ||
+    interactiveText.includes('Nak buat apa dengan video ni?')
+  ) {
     await ensureInteractiveWebhook();
   }
 
