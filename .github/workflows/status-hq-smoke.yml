@@ -14,14 +14,13 @@ on:
 jobs:
   smoke:
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
-      - run: npm ci
+      - run: npm install
       - name: Process real TikTok link through Status HQ
         env:
           STATUS_TEST_URL: https://vt.tiktok.com/ZSgbsv3MX
