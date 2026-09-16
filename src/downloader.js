@@ -1,5 +1,9 @@
-import youtubedl from 'youtube-dl-exec';
+import { execFile } from 'node:child_process';
+import { chmod } from 'node:fs/promises';
+import path from 'node:path';
+import { promisify } from 'node:util';
 
+const execFileAsync = promisify(execFile);
 const TIKWM_API = 'https://www.tikwm.com/api/';
 const TIKWM_ORIGIN = 'https://www.tikwm.com';
 
@@ -166,48 +170,58 @@ async function parseTikTok(url) {
 }
 
 async function parseWithYtDlp(url) {
-  let raw;
+  const binary = path.join(process.cwd(), 'bin', 'yt-dlp');
   try {
-    raw = await youtubedl(url, {
-      dumpSingleJson: true,
-      skipDownload: true,
-      noWarnings: true,
-      noPlaylist: true,
-      noCheckCertificates: true,
-      preferFreeFormats: true,
-    }, {
-      timeout: Number(process.env.DOWNLOADER_TIMEOUT_MS || 25000),
-      maxBuffer: 8 * 1024 * 1024,
+    await chmod(binary, 0o755).catch(() => {});
+    const args = [
+      '--dump-single-json',
+      '--skip-download',
+      '--no-warnings',
+      '--no-playlist',
+      '--no-check-certificates',
+      '--prefer-free-formats',
+      '--js-runtimes', `node:${process.execPath}`,
+      '--remote-components', 'ejs:github',
+      '--',
+      url,
+    ];
+
+    const { stdout } = await execFileAsync(binary, args, {
+      timeout: Number(process.env.DOWNLOADER_TIMEOUT_MS || 45000),
+      maxBuffer: 12 * 1024 * 1024,
+      env: { ...process.env, PATH: `${path.dirname(process.execPath)}:${process.env.PATH || ''}` },
     });
+
+    const info = normalizeInfo(stdout);
+    if (!info) {
+      const err = new Error('yt-dlp returned invalid metadata.');
+      err.code = 'NO_MEDIA';
+      throw err;
+    }
+
+    const videos = usableVideoFormats(info);
+    if (!videos.length) {
+      const err = new Error('No directly downloadable video format was found.');
+      err.code = 'NO_MEDIA';
+      throw err;
+    }
+
+    return {
+      platform: info.extractor_key ?? info.extractor ?? null,
+      title: info.title ?? '',
+      thumbnail: info.thumbnail ?? '',
+      duration: info.duration ?? null,
+      images: [],
+      videos,
+      audios: [],
+    };
   } catch (error) {
-    const err = new Error(error?.stderr || error?.message || 'yt-dlp failed.');
+    if (error?.code === 'NO_MEDIA') throw error;
+    const detail = error?.stderr || error?.stdout || error?.message || 'yt-dlp failed.';
+    const err = new Error(String(detail));
     err.code = 'DOWNLOADER_ERROR';
     throw err;
   }
-
-  const info = normalizeInfo(raw);
-  if (!info) {
-    const err = new Error('yt-dlp returned invalid metadata.');
-    err.code = 'NO_MEDIA';
-    throw err;
-  }
-
-  const videos = usableVideoFormats(info);
-  if (!videos.length) {
-    const err = new Error('No directly downloadable video format was found.');
-    err.code = 'NO_MEDIA';
-    throw err;
-  }
-
-  return {
-    platform: info.extractor_key ?? info.extractor ?? null,
-    title: info.title ?? '',
-    thumbnail: info.thumbnail ?? '',
-    duration: info.duration ?? null,
-    images: [],
-    videos,
-    audios: [],
-  };
 }
 
 export async function parseMedia(url) {
