@@ -1,7 +1,25 @@
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import ffmpegPath from 'ffmpeg-static';
 import { parseMedia, chooseBestVideo } from '../src/downloader.js';
 import { prepareWhatsAppStatusHQ } from '../src/status-hq.js';
 
+const execFileAsync = promisify(execFile);
 const TEST_URL = 'https://www.tiktok.com/@j_k_123_7/video/7654589734496341262';
+
+async function probeDimensions(filePath) {
+  let stderr = '';
+  try {
+    await execFileAsync(ffmpegPath, ['-hide_banner', '-i', filePath], {
+      timeout: 12000,
+      maxBuffer: 8 * 1024 * 1024,
+    });
+  } catch (error) {
+    stderr = String(error?.stderr || error?.message || '');
+  }
+  const match = stderr.match(/Video:[^\n]*?\b(\d{2,5})x(\d{2,5})\b/i);
+  return match ? { width: Number(match[1]), height: Number(match[2]) } : { width: null, height: null };
+}
 
 export default async function handler(req, res) {
   const started = Date.now();
@@ -25,25 +43,31 @@ export default async function handler(req, res) {
       video: best,
     });
 
-    const clips = prepared.clips.map((clip) => ({
-      index: clip.index,
-      count: clip.count,
-      duration: clip.duration,
-      size: clip.size,
-      attempt: clip.attempt,
-    }));
+    const output = await probeDimensions(prepared.filePath);
+    const sourceRatio = prepared.source?.width && prepared.source?.height
+      ? prepared.source.width / prepared.source.height
+      : null;
+    const outputRatio = output.width && output.height ? output.width / output.height : null;
+    const ratioDiff = sourceRatio && outputRatio ? Math.abs(outputRatio - sourceRatio) / sourceRatio : null;
+    const ratioOk = ratioDiff === null || ratioDiff <= 0.02;
 
     return res.status(200).json({
-      ok: clips.length > 0,
+      ok: Boolean(prepared.filePath && prepared.size && ratioOk),
       stage: 'complete',
       ms: Date.now() - started,
+      singleFile: true,
       sourceDuration: prepared.source?.duration || null,
       sourceWidth: prepared.source?.width || null,
       sourceHeight: prepared.source?.height || null,
+      outputWidth: output.width,
+      outputHeight: output.height,
+      ratioDiff,
+      size: prepared.size,
       quality: prepared.quality,
       profile: prepared.profile?.mode || null,
-      switchedForLength: Boolean(prepared.switchedForLength),
-      clips,
+      tier: prepared.profile?.tier || null,
+      videoKbps: prepared.profile?.videoKbps || null,
+      attempt: prepared.attempt || null,
     });
   } catch (error) {
     return res.status(200).json({
