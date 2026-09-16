@@ -1,13 +1,13 @@
 {
   "name": "telegram-social-downloader-bot",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "private": true,
   "type": "module",
   "engines": {
     "node": ">=22"
   },
   "scripts": {
-    "postinstall": "node scripts/install-ytdlp.mjs",
+    "postinstall": "node scripts/install-ytdlp.mjs && node scripts/patch-runtime.mjs",
     "check": "node --check api/telegram.js && node --check api/health.js && node --check src/downloader.js && node --check src/telegram.js"
   }
 }
