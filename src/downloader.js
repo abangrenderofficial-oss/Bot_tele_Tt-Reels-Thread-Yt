@@ -136,6 +136,7 @@ async function parseTikTok(url) {
     seen.add(direct);
     videos.push({
       url: direct,
+      sourceUrl: url,
       quality,
       width: data.width ?? null,
       height: data.height ?? null,
@@ -214,6 +215,7 @@ async function parseYouTubeWithPiped(url) {
         .filter((s) => s?.url && s.videoOnly === false)
         .map((s) => ({
           url: s.url,
+          sourceUrl: url,
           quality: s.quality || (s.height ? `${s.height}p` : 'video'),
           width: s.width ?? null,
           height: s.height ?? null,
@@ -320,6 +322,7 @@ async function parseThreads(url) {
 
   const videos = video ? [{
     url: decodeHtml(video),
+    sourceUrl: url,
     quality: 'video',
     width: null,
     height: null,
@@ -381,7 +384,7 @@ async function parseWithYtDlp(url) {
       throw err;
     }
 
-    const videos = usableVideoFormats(info);
+    const videos = usableVideoFormats(info).map((item) => ({ ...item, sourceUrl: url }));
     if (!videos.length) {
       const err = new Error('No directly downloadable video format was found.');
       err.code = 'NO_MEDIA';
