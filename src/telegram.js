@@ -28,6 +28,34 @@ function uploadLimitBytes() {
   return DEFAULT_CLOUD_UPLOAD_LIMIT;
 }
 
+function productionBaseUrl() {
+  const explicit = String(process.env.PUBLIC_BASE_URL || '').replace(/\/$/, '');
+  if (explicit) return explicit;
+  const productionHost = String(process.env.VERCEL_PROJECT_PRODUCTION_URL || '').replace(/^https?:\/\//, '').replace(/\/$/, '');
+  if (productionHost) return `https://${productionHost}`;
+  const deploymentHost = String(process.env.VERCEL_URL || '').replace(/^https?:\/\//, '').replace(/\/$/, '');
+  return deploymentHost ? `https://${deploymentHost}` : '';
+}
+
+async function ensureInteractiveWebhook() {
+  const baseUrl = productionBaseUrl();
+  const webhookSecret = process.env.TELEGRAM_WEBHOOK_SECRET;
+  if (!baseUrl || !webhookSecret || !process.env.TELEGRAM_BOT_TOKEN) return false;
+
+  try {
+    await telegram('setWebhook', {
+      url: `${baseUrl}/api/telegram`,
+      secret_token: webhookSecret,
+      allowed_updates: ['message', 'edited_message', 'callback_query'],
+      drop_pending_updates: false,
+    });
+    return true;
+  } catch (error) {
+    console.warn('Interactive webhook refresh failed:', error?.message);
+    return false;
+  }
+}
+
 function sourceHeaders(headers) {
   const source = headers && typeof headers === 'object' ? headers : {};
   const allowed = new Set(['user-agent', 'referer', 'origin', 'accept', 'accept-language']);
@@ -69,7 +97,11 @@ export async function telegram(method, payload = {}) {
   return parseTelegramResponse(response, method);
 }
 
-export function sendMessage(chatId, text, extra = {}) {
+export async function sendMessage(chatId, text, extra = {}) {
+  if (String(text).includes('TikTok photo/slideshow dikesan')) {
+    await ensureInteractiveWebhook();
+  }
+
   return telegram('sendMessage', {
     chat_id: chatId,
     text,
