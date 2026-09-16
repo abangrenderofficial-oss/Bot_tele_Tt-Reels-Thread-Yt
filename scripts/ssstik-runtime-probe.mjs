@@ -7,6 +7,89 @@ function snippet(text, index, radius = 700) {
   return text.slice(Math.max(0, index - radius), Math.min(text.length, index + radius)).replace(/\s+/g, ' ');
 }
 
+function canonicalFromText(text = '') {
+  const decoded = String(text).replaceAll('&amp;', '&').replaceAll('\\/', '/');
+  return decoded.match(/https:\/\/www\.tiktok\.com\/@[^\s"'<>]+\/video\/\d+/i)?.[0]
+    || decoded.match(/https:\/\/(?:www\.|m\.)?tiktok\.com\/[^\s"'<>]*\/video\/\d+/i)?.[0]
+    || '';
+}
+
+async function resolveTikTokShort(inputUrl) {
+  let url;
+  try { url = new URL(inputUrl); } catch { return inputUrl; }
+  if (!['vt.tiktok.com', 'vm.tiktok.com'].includes(url.hostname.toLowerCase())) return inputUrl;
+
+  // TikTok's oEmbed endpoint often resolves share shortlinks server-side and exposes the canonical cite URL.
+  try {
+    const endpoint = `https://www.tiktok.com/oembed?url=${encodeURIComponent(inputUrl)}`;
+    const res = await fetch(endpoint, {
+      headers: { 'User-Agent': UA, Accept: 'application/json,text/plain,*/*' },
+      redirect: 'follow', signal: AbortSignal.timeout(20000),
+    });
+    const text = await res.text();
+    console.log('OEMBED', res.status, 'bytes', text.length, 'head', text.slice(0, 500).replace(/\s+/g, ' '));
+    if (res.ok) {
+      let data = null;
+      try { data = JSON.parse(text); } catch {}
+      const canonical = canonicalFromText(data?.html || '') || canonicalFromText(text);
+      if (canonical) {
+        console.log('OEMBED_CANONICAL', canonical);
+        return canonical;
+      }
+      const id = String(data?.html || text).match(/data-video-id=["'](\d+)["']/i)?.[1];
+      if (id) {
+        const synthetic = `https://www.tiktok.com/@_/video/${id}`;
+        console.log('OEMBED_ID', id, synthetic);
+        return synthetic;
+      }
+    }
+  } catch (error) {
+    console.log('OEMBED_FAIL', error?.message || error);
+  }
+
+  // Probe redirects with several realistic clients. TikTok sometimes varies redirect target by UA.
+  const uas = [
+    UA,
+    'Mozilla/5.0 (Linux; Android 15; Pixel 9 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Mobile Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)',
+  ];
+  const shortCode = url.pathname.split('/').filter(Boolean)[0] || '';
+  const probes = [inputUrl, shortCode ? `https://www.tiktok.com/t/${shortCode}/` : ''].filter(Boolean);
+  for (const probe of probes) {
+    for (const userAgent of uas) {
+      try {
+        const res = await fetch(probe, {
+          method: 'GET', redirect: 'manual',
+          headers: {
+            'User-Agent': userAgent,
+            Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9',
+            Referer: 'https://www.tiktok.com/',
+          },
+          signal: AbortSignal.timeout(15000),
+        });
+        const location = res.headers.get('location') || '';
+        console.log('REDIRECT_PROBE', res.status, probe, '=>', location);
+        if (/\/video\/\d+/i.test(location)) return new URL(location, probe).toString();
+        const body = await res.text().catch(() => '');
+        const canonical = canonicalFromText(body);
+        if (canonical) {
+          console.log('BODY_CANONICAL', canonical);
+          return canonical;
+        }
+      } catch (error) {
+        console.log('REDIRECT_FAIL', probe, error?.message || error);
+      }
+    }
+  }
+
+  return inputUrl;
+}
+
+const resolvedUrl = await resolveTikTokShort(testUrl);
+console.log('RESOLVED_URL', resolvedUrl);
+
 const res = await fetch(pageUrl, {
   headers: {
     'User-Agent': UA,
@@ -32,9 +115,9 @@ if (!token || !furl) {
 const cookies = typeof res.headers.getSetCookie === 'function'
   ? res.headers.getSetCookie().map((v) => String(v).split(';', 1)[0]).filter(Boolean).join('; ')
   : '';
-const body = new URLSearchParams({ id: testUrl, locale: 'en', tt: token });
+const body = new URLSearchParams({ id: resolvedUrl, locale: 'en', tt: token });
 const endpoint = new URL(`/${furl}?url=dl`, res.url).toString();
-console.log('POST_TO', endpoint, 'TEST_URL', testUrl);
+console.log('POST_TO', endpoint, 'TEST_URL', resolvedUrl);
 const post = await fetch(endpoint, {
   method: 'POST',
   headers: {
@@ -61,10 +144,10 @@ if (!post.ok) throw new Error(`SSSTik POST HTTP ${post.status}`);
 const hrefs = [...out.matchAll(/href=["']([^"']+)["']/gi)].map((m) => m[1]);
 console.log('HREF_COUNT', hrefs.length);
 hrefs.slice(0, 20).forEach((v, i) => console.log('HREF', i, v));
-const video = hrefs.find((v) => /^https?:\/\//i.test(v) && /\.mp4|video|ssscdn|tikcdn|tiktokcdn|tikcdn/i.test(v)) || '';
+const video = hrefs.find((v) => /^https?:\/\//i.test(v) && /\.mp4|video|ssscdn|tikcdn|tiktokcdn/i.test(v)) || '';
 console.log('VIDEO_CANDIDATE', video);
 if (!video) {
-  for (const needle of ['download', 'without watermark', 'mp4', 'error', 'wrong link']) {
+  for (const needle of ['download', 'without watermark', 'mp4', 'error', 'wrong link', 'multiple videos']) {
     const idx = out.toLowerCase().indexOf(needle);
     if (idx >= 0) console.log('OUT_PROBE', needle, snippet(out, idx));
   }
