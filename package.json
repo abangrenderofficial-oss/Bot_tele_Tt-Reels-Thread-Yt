@@ -1,10 +1,13 @@
 {
   "name": "telegram-social-downloader-bot",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "type": "module",
   "engines": {
     "node": ">=20"
+  },
+  "dependencies": {
+    "youtube-dl-exec": "^3.1.15"
   },
   "scripts": {
     "check": "node --check api/telegram.js && node --check api/health.js && node --check src/downloader.js && node --check src/telegram.js"
