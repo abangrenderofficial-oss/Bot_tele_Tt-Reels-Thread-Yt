@@ -1,0 +1,29 @@
+name: Status HQ Production Smoke
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Wait for Vercel deployment
+        run: sleep 60
+
+      - name: Run production Status HQ test
+        shell: bash
+        run: |
+          set -u
+          URL='https://bot-tele-tt-reels-thread-yt.vercel.app/api/status-diagnostic'
+          OUT=''
+          for TRY in 1 2 3 4; do
+            OUT=$(curl -fsS --max-time 280 "$URL" || true)
+            echo "try=$TRY $OUT"
+            if echo "$OUT" | grep -q '"stage"'; then break; fi
+            sleep 20
+          done
+          echo "$OUT" | grep -q '"ok":true'
+          echo "$OUT" | grep -q '"stage":"complete"'
