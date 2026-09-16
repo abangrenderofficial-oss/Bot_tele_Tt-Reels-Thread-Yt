@@ -1,5 +1,6 @@
 import { parseMedia, chooseBestVideo, needsCustomHeaders } from '../src/downloader.js';
 import { parseThreadsPost } from '../src/threads.js';
+import { prepareSocialVideoTelegramUpload } from '../src/social-video.js';
 import { prepareYouTubeTelegramUpload } from '../src/youtube-upload.js';
 import { detectPlatform, extractFirstUrl, platformLabel } from '../src/platform.js';
 import { createRelayUrl } from '../src/relay.js';
@@ -27,6 +28,7 @@ const START_TEXT = [
   '• YouTube / Shorts',
   '',
   'YouTube: bot utamakan 1080p, kemudian 720p, kemudian 480p. Jika video dan audio berasingan, bot akan merge dahulu sebelum hantar ke Telegram.',
+  'TikTok / Instagram / Threads: jika video melebihi had Telegram, bot akan cuba compress HQ dahulu sambil mengekalkan aspect ratio asal.',
   '',
   'Bot akan cuba hantar media terus dalam chat. Untuk CDN yang perlukan header khas, bot akan relay media melalui server sendiri dan cuba upload terus ke Telegram.',
   '',
@@ -137,12 +139,34 @@ function orderedVideoCandidates(videos = []) {
   return [...likelySendable, ...knownTooLarge];
 }
 
-async function deliverVideo(chatId, video, title, baseUrl) {
+async function deliverCompressedSocial(chatId, video, title, durationHint) {
+  let prepared = null;
+  try {
+    prepared = await prepareSocialVideoTelegramUpload(video, configuredUploadLimit(), {
+      duration: Number(video?.duration || durationHint || 0) || null,
+    });
+
+    const caption = prepared.compressed
+      ? `${title}\n🎬 ${prepared.quality}`
+      : title;
+    await sendVideoFileUpload(chatId, prepared.filePath, caption);
+    return true;
+  } catch (error) {
+    console.warn('Social HQ compression/upload failed:', error?.code, error?.message);
+    return false;
+  } finally {
+    if (prepared?.cleanup) await prepared.cleanup().catch(() => {});
+  }
+}
+
+async function deliverVideo(chatId, video, title, baseUrl, options = {}) {
   if (!video?.url) return false;
 
   const size = Number(video.filesize || 0);
   const customHeaders = needsCustomHeaders(video);
   const relay = relayItem(baseUrl, video);
+  const uploadLimit = configuredUploadLimit();
+  const allowSocialCompression = options.platform && options.platform !== 'youtube';
 
   if (!size || size <= TELEGRAM_URL_FETCH_MAX) {
     const fetchUrl = customHeaders ? relay?.url : video.url;
@@ -156,8 +180,10 @@ async function deliverVideo(chatId, video, title, baseUrl) {
     }
   }
 
-  const uploadLimit = configuredUploadLimit();
   if (size && size > uploadLimit) {
+    if (allowSocialCompression) {
+      return deliverCompressedSocial(chatId, video, title, options.duration);
+    }
     console.warn(`Skipping ${video.quality || 'video'}: known size ${size} exceeds Telegram upload limit ${uploadLimit}.`);
     return false;
   }
@@ -167,6 +193,9 @@ async function deliverVideo(chatId, video, title, baseUrl) {
     return true;
   } catch (error) {
     console.warn('Telegram server upload failed:', error?.code, error?.message);
+    if (allowSocialCompression) {
+      return deliverCompressedSocial(chatId, video, title, options.duration);
+    }
     return false;
   }
 }
@@ -245,7 +274,10 @@ async function processMessage(message, baseUrl) {
   if (candidates.length && !videoSent) {
     await sendChatAction(chatId, 'upload_video').catch(() => {});
     for (const candidate of candidates.slice(0, 6)) {
-      if (await deliverVideo(chatId, candidate, title, baseUrl)) {
+      if (await deliverVideo(chatId, candidate, title, baseUrl, {
+        platform,
+        duration: media.duration,
+      })) {
         videoSent = true;
         break;
       }
@@ -256,7 +288,7 @@ async function processMessage(message, baseUrl) {
       if (best) {
         await sendDownloadButton(
           chatId,
-          `${title}\n\nBot dah cuba 1080p/720p/480p, direct URL, relay dan server upload, tapi fail ini masih melebihi had Telegram cloud atau CDN menolak transfer.`,
+          `${title}\n\nBot dah cuba direct URL, relay, server upload dan HQ compression tanpa mengubah aspect ratio, tetapi fail ini masih tidak dapat dihantar melalui Telegram cloud.`,
           best.url,
           `⬇️ Download ${best.quality || 'video'}`,
         );
