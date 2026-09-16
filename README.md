@@ -23,10 +23,12 @@ Copy `.env.example` and configure these in Vercel:
 
 - `TELEGRAM_BOT_TOKEN` - token from BotFather
 - `TELEGRAM_WEBHOOK_SECRET` - random secret used to validate Telegram webhook requests
+- `SETUP_SECRET` - random secret used only to protect `/api/setup-webhook`
 - `EASYDOWN_API_TOKEN` - downloader API token
 
 Optional:
 
+- `PUBLIC_BASE_URL` - production URL such as `https://your-project.vercel.app`; normally the setup endpoint can detect the host automatically
 - `EASYDOWN_API_URL` - defaults to `https://api.easydown.org/api/v1/parse`
 - `DOWNLOADER_TIMEOUT_MS` - defaults to `20000`
 
@@ -37,20 +39,20 @@ Never commit real tokens to GitHub.
 - `GET /api/health` - health/config status
 - `GET /api/telegram` - webhook endpoint status
 - `POST /api/telegram` - Telegram webhook receiver
+- `POST /api/setup-webhook` - protected one-time webhook registration helper
 
 ## Register Telegram webhook
 
-After deployment and environment variables are configured, register:
+Recommended after deployment and environment variables are configured:
 
 ```bash
-curl -X POST "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "url": "https://<YOUR_VERCEL_DOMAIN>/api/telegram",
-    "secret_token": "<TELEGRAM_WEBHOOK_SECRET>",
-    "allowed_updates": ["message", "edited_message"]
-  }'
+curl -X POST "https://<YOUR_VERCEL_DOMAIN>/api/setup-webhook" \
+  -H "Authorization: Bearer <SETUP_SECRET>"
 ```
+
+The setup endpoint registers `/api/telegram` with Telegram and uses `TELEGRAM_WEBHOOK_SECRET` to authenticate incoming webhook requests.
+
+You can also register the webhook directly with Telegram's `setWebhook` API if preferred.
 
 ## User flow
 
