@@ -72,10 +72,10 @@ func stillImageTimeAdaptor() throws -> AVAssetWriterInputMetadataAdaptor {
 
     var formatDescription: CMFormatDescription?
     let status = CMMetadataFormatDescriptionCreateWithMetadataSpecifications(
-        kCFAllocatorDefault,
-        kCMMetadataFormatType_Boxed,
-        [specification] as CFArray,
-        &formatDescription
+        allocator: kCFAllocatorDefault,
+        metadataType: kCMMetadataFormatType_Boxed,
+        metadataSpecifications: [specification] as CFArray,
+        formatDescriptionOut: &formatDescription
     )
     guard status == noErr, let formatDescription else {
         throw PairError.message("Could not create Live Photo still-image-time metadata track.")
@@ -95,7 +95,7 @@ func pairMovie(inputURL: URL, outputURL: URL, identifier: String) throws {
     guard let videoTrack = asset.tracks(withMediaType: .video).first else {
         throw PairError.message("Source Live Photo movie has no video track.")
     }
-    guard let videoFormat = videoTrack.formatDescriptions.first as? CMFormatDescription else {
+    guard let videoFormat = videoTrack.formatDescriptions.first else {
         throw PairError.message("Could not read source video format description.")
     }
 
@@ -119,7 +119,7 @@ func pairMovie(inputURL: URL, outputURL: URL, identifier: String) throws {
     var audioInput: AVAssetWriterInput?
     var audioOutput: AVAssetReaderTrackOutput?
     if let audioTrack = asset.tracks(withMediaType: .audio).first,
-       let audioFormat = audioTrack.formatDescriptions.first as? CMFormatDescription {
+       let audioFormat = audioTrack.formatDescriptions.first {
         let output = AVAssetReaderTrackOutput(track: audioTrack, outputSettings: nil)
         output.alwaysCopiesSampleData = false
         if reader.canAdd(output) {
@@ -181,8 +181,6 @@ func pairMovie(inputURL: URL, outputURL: URL, identifier: String) throws {
         }
     }
 
-    // Video first is deliberate: the paired clip is short and capped below Telegram's 10 MB limit.
-    // Copying compressed samples preserves the ffmpeg-prepared H.264 bitstream instead of re-encoding it.
     try copySamples(output: videoOutput, input: videoInput)
     if let audioInput, let audioOutput {
         try copySamples(output: audioOutput, input: audioInput)
