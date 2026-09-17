@@ -30,6 +30,7 @@ const TELEGRAM_CLOUD_UPLOAD_MAX = 50 * 1024 * 1024;
 const TT_SLIDE_SPLIT = 'ttslide:split:v2';
 const TT_SLIDE_VIDEO = 'ttslide:video:v2';
 const MEDIA_STATUS_HQ = 'media:status:v2';
+const AUDIT_DELETE = 'audit:delete:v1';
 
 // OWNER LOCK: Keep this /start and /help copy unchanged unless the owner explicitly requests an edit.
 const START_TEXT = [
@@ -101,6 +102,15 @@ function statusButton(sourceUrl = '') {
   return {
     reply_markup: {
       inline_keyboard: [[{ text: '📱 Status HQ', callback_data: statusCallbackData(sourceUrl) }]],
+    },
+  };
+}
+
+function auditDeleteButton(profileMessageId = '') {
+  const extra = Number(profileMessageId || 0) > 0 ? `|${Number(profileMessageId)}` : '';
+  return {
+    reply_markup: {
+      inline_keyboard: [[{ text: '🗑️ Deleted', callback_data: `${AUDIT_DELETE}${extra}` }]],
     },
   };
 }
@@ -221,27 +231,17 @@ function formatAuditTime(unixSeconds) {
   return new Date(seconds * 1000).toLocaleString('en-GB', { timeZone: 'Asia/Kuala_Lumpur', hour12: false });
 }
 
-function buildAuditCaption(from = {}, audit = {}, originalCaption = '') {
+function buildAuditCaption(from = {}, audit = {}) {
   const username = from.username ? `@${from.username}` : '-';
   const platform = audit.platform ? platformLabel(audit.platform) : '-';
-  const lines = [
+  return [
     '📋 USER RECORD',
     `👤 Username: ${username}`,
     `🆔 Telegram ID: ${from.id || '-'}`,
     `📝 Nama: ${userFullName(from)}`,
-    `🌐 Language: ${from.language_code || '-'}`,
-    `💎 Premium: ${from.is_premium ? 'Yes' : 'No'}`,
     `🕒 Masa: ${formatAuditTime(audit.sourceTimestamp)}`,
     `📱 Platform: ${platform}`,
-    `💬 Message ID: ${audit.sourceMessageId || '-'}`,
-    ...(audit.sourceUrl ? [`🔗 Link: ${audit.sourceUrl}`] : []),
-  ];
-
-  if (originalCaption) {
-    lines.push('', '🎬 VIDEO', originalCaption);
-  }
-
-  return lines.join('\n').slice(0, 1024);
+  ].join('\n').slice(0, 1024);
 }
 
 async function latestProfilePhotoFileId(userId) {
@@ -264,29 +264,17 @@ async function mirrorVideoToGroup(sourceChatId, sentMessage, mirrorGroupId, from
   if (!mirrorGroupId || !sentMessage?.message_id) return false;
   if (String(sourceChatId) === String(mirrorGroupId)) return false;
 
-  const originalCaption = String(sentMessage.caption || '').trim();
-  const caption = buildAuditCaption(from, audit, originalCaption);
+  const caption = buildAuditCaption(from, audit);
   const profilePhotoId = await latestProfilePhotoFileId(from?.id);
-  const videoFileId = sentMessage?.video?.file_id;
+  let profileMessageId = 0;
 
   try {
-    if (profilePhotoId && videoFileId) {
-      await telegram('sendMediaGroup', {
+    if (profilePhotoId) {
+      const profileMessage = await telegram('sendPhoto', {
         chat_id: mirrorGroupId,
-        media: [
-          {
-            type: 'photo',
-            media: profilePhotoId,
-            caption,
-          },
-          {
-            type: 'video',
-            media: videoFileId,
-            supports_streaming: true,
-          },
-        ],
+        photo: profilePhotoId,
       });
-      return true;
+      profileMessageId = Number(profileMessage?.message_id || 0);
     }
 
     await telegram('copyMessage', {
@@ -294,9 +282,16 @@ async function mirrorVideoToGroup(sourceChatId, sentMessage, mirrorGroupId, from
       from_chat_id: sourceChatId,
       message_id: sentMessage.message_id,
       caption,
+      ...auditDeleteButton(profileMessageId),
     });
     return true;
   } catch (error) {
+    if (profileMessageId) {
+      await telegram('deleteMessage', {
+        chat_id: mirrorGroupId,
+        message_id: profileMessageId,
+      }).catch(() => {});
+    }
     console.warn('Group mirror failed:', error?.code, error?.message);
     return false;
   }
@@ -310,6 +305,47 @@ async function isGroupAdmin(chatId, userId) {
   } catch {
     return false;
   }
+}
+
+async function processAuditDelete(callbackQuery) {
+  const action = String(callbackQuery?.data || '');
+  if (!action.startsWith(AUDIT_DELETE)) return false;
+
+  const chatId = callbackQuery?.message?.chat?.id;
+  const messageId = callbackQuery?.message?.message_id;
+  const userId = callbackQuery?.from?.id;
+  const chatType = callbackQuery?.message?.chat?.type;
+  if (!chatId || !messageId) return true;
+
+  if (['group', 'supergroup'].includes(chatType) && !(await isGroupAdmin(chatId, userId))) {
+    await telegram('answerCallbackQuery', {
+      callback_query_id: callbackQuery.id,
+      text: 'Hanya admin group boleh delete rekod ini.',
+      show_alert: false,
+    }).catch(() => {});
+    return true;
+  }
+
+  const profileMessageId = Number(action.split('|')[1] || 0);
+  await telegram('answerCallbackQuery', {
+    callback_query_id: callbackQuery.id,
+    text: 'Rekod dipadam.',
+    show_alert: false,
+  }).catch(() => {});
+
+  await telegram('deleteMessage', {
+    chat_id: chatId,
+    message_id: messageId,
+  }).catch(() => {});
+
+  if (profileMessageId > 0 && profileMessageId !== Number(messageId)) {
+    await telegram('deleteMessage', {
+      chat_id: chatId,
+      message_id: profileMessageId,
+    }).catch(() => {});
+  }
+
+  return true;
 }
 
 async function setMirrorWebhook(baseUrl, mirrorGroupId = '') {
@@ -892,6 +928,9 @@ export default async function handler(req, res) {
 
     const callbackQuery = update?.callback_query;
     if (callbackQuery) {
+      if (await processAuditDelete(callbackQuery)) {
+        return json(res, 200, { ok: true });
+      }
       if (await processStatusButton(callbackQuery)) {
         return json(res, 200, { ok: true });
       }
