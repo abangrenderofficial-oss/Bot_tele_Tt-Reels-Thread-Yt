@@ -7,7 +7,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from telethon import TelegramClient, functions, types
+from telethon import TelegramClient
 from telethon.sessions import MemorySession
 
 MB = 1024 * 1024
@@ -124,7 +124,7 @@ async def main():
 
     peer = None
     temp_dir = Path(tempfile.mkdtemp(prefix='abangrender-heavy-status-'))
-    source = temp_dir / 'source-video'
+    source = temp_dir / 'source-video.mp4'
     output = temp_dir / 'status-hq.mp4'
 
     async def set_progress(percent: int):
@@ -136,17 +136,15 @@ async def main():
             print(f'progress edit ignored: {exc}', file=sys.stderr)
 
     try:
-        # Bot API and MTProto use the same underlying Telegram message IDs. Fetching by ID
-        # lets a fresh ephemeral runner recover the preview message without a persistent session.
-        result = await client(functions.messages.GetMessagesRequest(
-            id=[types.InputMessageID(id=message_id)]
-        ))
-        messages = [m for m in (getattr(result, 'messages', None) or []) if not isinstance(m, types.MessageEmpty)]
-        if not messages:
+        # A fresh runner has no saved Telegram entity/session cache. Telethon supports
+        # entity=None when fetching a known message ID, which is ideal for this worker.
+        message = await client.get_messages(None, ids=message_id)
+        if not message:
             raise RuntimeError(f'Telegram message {message_id} could not be recovered through MTProto.')
 
-        message = messages[0]
-        peer = await client.get_input_entity(message.peer_id)
+        peer = await message.get_input_chat()
+        if not peer:
+            raise RuntimeError(f'Telegram peer for chat {chat_id} could not be resolved.')
         await set_progress(8)
 
         downloaded = await client.download_media(message, file=str(source))
