@@ -42,13 +42,29 @@ function safeExtension(item) {
   return ext || 'mp4';
 }
 
+async function fetchWithHeaderTimeout(url, options, timeoutMs) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), Math.max(5000, Number(timeoutMs) || 30000));
+  try {
+    const response = await fetch(url, { ...options, signal: controller.signal });
+    clearTimeout(timer);
+    return response;
+  } catch (error) {
+    clearTimeout(timer);
+    throw error;
+  }
+}
+
 async function downloadToFile(item, filePath) {
-  const response = await fetch(item.url, {
-    method: 'GET',
-    headers: sourceHeaders(item.headers),
-    redirect: 'follow',
-    signal: AbortSignal.timeout(Number(process.env.MEDIA_FETCH_TIMEOUT_MS || 45000)),
-  });
+  const response = await fetchWithHeaderTimeout(
+    item.url,
+    {
+      method: 'GET',
+      headers: sourceHeaders(item.headers),
+      redirect: 'follow',
+    },
+    process.env.SOCIAL_SOURCE_HEADER_TIMEOUT_MS || 30000,
+  );
 
   if (!response.ok || !response.body) {
     const err = new Error(`Media source returned HTTP ${response.status}.`);
@@ -175,12 +191,17 @@ async function compressVideo(inputPath, outputPath, plan) {
 
   const args = [
     '-y',
+    '-hide_banner',
+    '-loglevel', 'error',
+    '-nostats',
+    '-nostdin',
     '-i', inputPath,
     '-map', '0:v:0',
     '-map', '0:a:0?',
     '-vf', scale,
     '-c:v', 'libx264',
-    '-preset', String(process.env.SOCIAL_COMPRESS_PRESET || 'fast'),
+    '-threads', String(Math.max(1, Math.min(2, Number(process.env.SOCIAL_COMPRESS_THREADS || 2)))),
+    '-preset', String(process.env.SOCIAL_COMPRESS_PRESET || 'veryfast'),
     '-profile:v', 'high',
     '-pix_fmt', 'yuv420p',
     '-b:v', `${plan.videoKbps}k`,

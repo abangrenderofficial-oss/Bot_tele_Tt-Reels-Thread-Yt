@@ -39,6 +39,19 @@ function safeExtension(item) {
   return ext || 'jpg';
 }
 
+async function fetchWithHeaderTimeout(url, options, timeoutMs) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), Math.max(5000, Number(timeoutMs) || 30000));
+  try {
+    const response = await fetch(url, { ...options, signal: controller.signal });
+    clearTimeout(timer);
+    return response;
+  } catch (error) {
+    clearTimeout(timer);
+    throw error;
+  }
+}
+
 async function downloadRemoteImage(item, filePath) {
   if (!item?.url) {
     const err = new Error('Status HQ image source is missing.');
@@ -46,12 +59,15 @@ async function downloadRemoteImage(item, filePath) {
     throw err;
   }
 
-  const response = await fetch(item.url, {
-    method: 'GET',
-    headers: sourceHeaders(item.headers),
-    redirect: 'follow',
-    signal: AbortSignal.timeout(Number(process.env.STATUS_IMAGE_SOURCE_TIMEOUT_MS || 60000)),
-  });
+  const response = await fetchWithHeaderTimeout(
+    item.url,
+    {
+      method: 'GET',
+      headers: sourceHeaders(item.headers),
+      redirect: 'follow',
+    },
+    process.env.STATUS_IMAGE_SOURCE_HEADER_TIMEOUT_MS || 30000,
+  );
 
   if (!response.ok || !response.body) {
     const err = new Error(`Status HQ image source returned HTTP ${response.status}.`);
@@ -97,10 +113,12 @@ export async function prepareWhatsAppStatusImageHQ({ image }) {
         '-loglevel', 'error',
         '-nostats',
         '-nostdin',
+        '-filter_threads', '1',
         '-i', inputPath,
         '-vf', filter,
         '-frames:v', '1',
         '-q:v', '2',
+        '-threads', '1',
         '-map_metadata', '-1',
         outputPath,
       ],

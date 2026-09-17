@@ -57,6 +57,19 @@ function safeExtension(item) {
   return ext || 'mp4';
 }
 
+async function fetchWithHeaderTimeout(url, options, timeoutMs) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), Math.max(5000, Number(timeoutMs) || 30000));
+  try {
+    const response = await fetch(url, { ...options, signal: controller.signal });
+    clearTimeout(timer);
+    return response;
+  } catch (error) {
+    clearTimeout(timer);
+    throw error;
+  }
+}
+
 async function downloadRemoteVideo(item, filePath) {
   if (!item?.url) {
     const err = new Error('Status HQ source video URL is missing.');
@@ -64,12 +77,11 @@ async function downloadRemoteVideo(item, filePath) {
     throw err;
   }
 
-  const response = await fetch(item.url, {
-    method: 'GET',
-    headers: sourceHeaders(item.headers),
-    redirect: 'follow',
-    signal: AbortSignal.timeout(Number(process.env.STATUS_SOURCE_TIMEOUT_MS || 90000)),
-  });
+  const response = await fetchWithHeaderTimeout(
+    item.url,
+    { method: 'GET', headers: sourceHeaders(item.headers), redirect: 'follow' },
+    Number(process.env.STATUS_SOURCE_HEADER_TIMEOUT_MS || 30000),
+  );
 
   if (!response.ok || !response.body) {
     const err = new Error(`Status HQ source returned HTTP ${response.status}.`);
@@ -96,7 +108,6 @@ async function downloadWithYtDlp(url, outputBase, platform = 'generic') {
 
   const binary = ytdlpBinary();
   await chmod(binary, 0o755).catch(() => {});
-
   const outputTemplate = `${outputBase}.%(ext)s`;
   const format = platform === 'youtube'
     ? 'bestvideo[height<=1080]+bestaudio/best[height<=1080]'
@@ -117,7 +128,6 @@ async function downloadWithYtDlp(url, outputBase, platform = 'generic') {
     ? Number(process.env.STATUS_YOUTUBE_TIMEOUT_MS || 90000)
     : Number(process.env.STATUS_YTDLP_TIMEOUT_MS || 120000);
   const { stdout } = await execFileAsync(binary, args, commandOptions(timeout));
-
   const reported = String(stdout || '').split(/\r?\n/).map((line) => line.trim()).filter(Boolean).at(-1);
   const candidates = [reported, `${outputBase}.mp4`, `${outputBase}.mkv`, `${outputBase}.webm`, `${outputBase}.mov`].filter(Boolean);
   for (const candidate of candidates) {
@@ -145,11 +155,7 @@ function parseClockDuration(value) {
 async function probeLocalVideo(filePath) {
   let stderr = '';
   try {
-    await execFileAsync(
-      ffmpegPath,
-      ['-hide_banner', '-i', filePath],
-      commandOptions(Number(process.env.STATUS_PROBE_TIMEOUT_MS || 12000)),
-    );
+    await execFileAsync(ffmpegPath, ['-hide_banner', '-i', filePath], commandOptions(Number(process.env.STATUS_PROBE_TIMEOUT_MS || 12000)));
   } catch (error) {
     stderr = String(error?.stderr || error?.message || '');
   }
@@ -161,12 +167,7 @@ async function probeLocalVideo(filePath) {
     err.code = 'STATUS_PROBE_FAILED';
     throw err;
   }
-
-  return {
-    duration,
-    width: dimensions ? Number(dimensions[1]) : null,
-    height: dimensions ? Number(dimensions[2]) : null,
-  };
+  return { duration, width: dimensions ? Number(dimensions[1]) : null, height: dimensions ? Number(dimensions[2]) : null };
 }
 
 function configuredUploadLimitBytes() {
@@ -185,9 +186,8 @@ function targetOutputBytes() {
 function chooseEncodePlan(probe) {
   const duration = Math.max(1, Number(probe.duration || 0));
   const audioKbps = 128;
-  const muxSafety = 0.92;
   const targetBytes = targetOutputBytes();
-  const totalKbps = Math.max(300, Math.floor((targetBytes * 8 / duration / 1000) * muxSafety));
+  const totalKbps = Math.max(300, Math.floor((targetBytes * 8 / duration / 1000) * 0.92));
   const videoKbps = Math.max(180, Math.min(4300, totalKbps - audioKbps - 60));
 
   let tier;
@@ -202,15 +202,13 @@ function chooseEncodePlan(probe) {
   const squareish = width && height && Math.abs(width - height) / Math.max(width, height) < 0.08;
   const longForm = duration >= 180;
   const veryLong = duration >= 420;
-
   if (veryLong && tier > 540) tier = 540;
 
   let maxWidth;
   let maxHeight;
   if (squareish) {
     const side = tier === 1080 ? 1080 : tier === 720 ? 720 : tier === 540 ? 540 : 360;
-    maxWidth = side;
-    maxHeight = side;
+    maxWidth = side; maxHeight = side;
   } else if (landscape) {
     if (tier === 1080) [maxWidth, maxHeight] = [1920, 1080];
     else if (tier === 720) [maxWidth, maxHeight] = [1280, 720];
@@ -234,7 +232,8 @@ function chooseEncodePlan(probe) {
     fps: '30000/1001',
     preset: longForm ? 'superfast' : (videoKbps >= 1800 ? 'fast' : 'veryfast'),
     scaleFlags: longForm ? 'bicubic' : 'lanczos',
-    threads: 0,
+    threads: Math.max(1, Math.min(2, Number(process.env.STATUS_FFMPEG_THREADS || 2))),
+    filterThreads: Math.max(1, Math.min(2, Number(process.env.STATUS_FILTER_THREADS || 1))),
   };
 }
 
@@ -242,12 +241,8 @@ function statusVideoFilter(plan) {
   const maxWidth = Math.max(2, Math.floor(Number(plan.maxWidth || 1080) / 2) * 2);
   const maxHeight = Math.max(2, Math.floor(Number(plan.maxHeight || 1920) / 2) * 2);
   const sar = 'if(gt(sar,0),sar,1)';
-  const fit = `min(${maxWidth}/(iw*${sar}),${maxHeight}/ih)`;
-
+  const fit = `min(1,min(${maxWidth}/(iw*${sar}),${maxHeight}/ih))`;
   return [
-    // Convert the source display aspect ratio to square pixels instead of only
-    // preserving coded width/height. This prevents anamorphic/SAR videos from
-    // looking squeezed in Telegram or WhatsApp while still avoiding crop/pad.
     `scale=w='max(2,trunc((iw*${sar})*${fit}/2)*2)':h='max(2,trunc(ih*${fit}/2)*2)':flags=${plan.scaleFlags || 'lanczos'}`,
     'setsar=1',
     `fps=${plan.fps}`,
@@ -256,47 +251,34 @@ function statusVideoFilter(plan) {
 
 async function encodeSingleStatusFile(inputPath, outputPath, plan, bitrateScale = 1) {
   await rm(outputPath, { force: true }).catch(() => {});
-
   const videoKbps = Math.max(160, Math.floor(plan.videoKbps * bitrateScale));
   const maxRate = Math.max(videoKbps, Math.floor(videoKbps * 1.18));
   const buffer = Math.max(maxRate * 2, 1000);
-
   const args = [
-    '-y',
-    '-hide_banner',
-    '-loglevel', 'error',
-    '-nostats',
-    '-nostdin',
+    '-y', '-hide_banner', '-loglevel', 'error', '-nostats', '-nostdin',
+    '-filter_threads', String(plan.filterThreads ?? 1),
     '-i', inputPath,
-    '-map', '0:v:0',
-    '-map', '0:a:0?',
+    '-map', '0:v:0', '-map', '0:a:0?',
     '-vf', statusVideoFilter(plan),
-    '-c:v', 'libx264',
-    '-preset', plan.preset,
-    '-pix_fmt', 'yuv420p',
-    '-b:v', `${videoKbps}k`,
-    '-maxrate', `${maxRate}k`,
-    '-bufsize', `${buffer}k`,
-    '-profile:v', 'high',
-    '-level:v', '4.0',
-    '-c:a', 'aac',
-    '-ar', '44100',
-    '-ac', '2',
-    '-b:a', `${plan.audioKbps}k`,
-    '-brand', 'isom',
-    '-movflags', '+faststart',
-    '-metadata:s:v:0', 'rotate=0',
-    '-map_metadata', '-1',
-    '-f', 'mp4',
-    '-threads', String(plan.threads ?? 0),
-    outputPath,
+    '-c:v', 'libx264', '-preset', plan.preset, '-pix_fmt', 'yuv420p',
+    '-b:v', `${videoKbps}k`, '-maxrate', `${maxRate}k`, '-bufsize', `${buffer}k`,
+    '-profile:v', 'high', '-level:v', '4.0',
+    '-c:a', 'aac', '-ar', '44100', '-ac', '2', '-b:a', `${plan.audioKbps}k`,
+    '-brand', 'isom', '-movflags', '+faststart', '-metadata:s:v:0', 'rotate=0',
+    '-map_metadata', '-1', '-f', 'mp4', '-threads', String(plan.threads ?? 2), outputPath,
   ];
 
-  await execFileAsync(
-    ffmpegPath,
-    args,
-    commandOptions(Number(process.env.STATUS_ENCODE_TIMEOUT_MS || 260000)),
-  );
+  try {
+    await execFileAsync(ffmpegPath, args, commandOptions(Number(process.env.STATUS_ENCODE_TIMEOUT_MS || 260000)));
+  } catch (error) {
+    console.error('Status HQ ffmpeg failed:', {
+      code: error?.code ?? null,
+      signal: error?.signal ?? null,
+      killed: Boolean(error?.killed),
+      stderr: String(error?.stderr || '').slice(-4000),
+    });
+    throw error;
+  }
 
   const fileStat = await stat(outputPath);
   if (!fileStat.isFile() || !fileStat.size) {
@@ -304,11 +286,7 @@ async function encodeSingleStatusFile(inputPath, outputPath, plan, bitrateScale 
     err.code = 'STATUS_OUTPUT_MISSING';
     throw err;
   }
-
-  return {
-    size: fileStat.size,
-    videoKbps,
-  };
+  return { size: fileStat.size, videoKbps };
 }
 
 async function cleanup(paths) {
@@ -363,18 +341,13 @@ export async function prepareWhatsAppStatusHQ({ sourceUrl, platform, video }) {
     }
 
     await rm(inputPath, { force: true }).catch(() => {});
-
     return {
       filePath: outputPath,
       size: encoded.size,
       source: probe,
       profile: {
-        mode: 'single',
-        tier: plan.tier,
-        maxWidth: plan.maxWidth,
-        maxHeight: plan.maxHeight,
-        videoKbps: encoded.videoKbps,
-        audioKbps: plan.audioKbps,
+        mode: 'single', tier: plan.tier, maxWidth: plan.maxWidth, maxHeight: plan.maxHeight,
+        videoKbps: encoded.videoKbps, audioKbps: plan.audioKbps,
       },
       quality: `Status HQ • single file • ${plan.tier}p class • H.264/AAC • ratio asal`,
       attempt: usedAttempt,
