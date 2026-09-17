@@ -5,51 +5,45 @@ on:
 jobs:
   diagnose:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - name: Test official TikTok resolution paths
+      - name: Test browser-session TikTok resolver
         run: |
-          node --input-type=module <<'NODE'
-          const short='https://vt.tiktok.com/ZSqsKvFLE';
-          const uas={
-            desktop:'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36',
-            iphone:'Mozilla/5.0 (iPhone; CPU iPhone OS 18_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1',
-            android:'Mozilla/5.0 (Linux; Android 15; Pixel 9 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Mobile Safari/537.36'
-          };
-          for (const [name,ua] of Object.entries(uas)) {
-            try {
-              const r=await fetch(short,{redirect:'manual',headers:{'user-agent':ua,accept:'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8','accept-language':'en-US,en;q=0.9'}});
-              console.log('SHORT',name,'status',r.status,'location',r.headers.get('location'),'set-cookie',Boolean(r.headers.get('set-cookie')));
-            } catch(e){console.log('SHORT_ERR',name,e.message)}
-          }
-          try {
-            const home=await fetch('https://www.tiktok.com/',{redirect:'manual',headers:{'user-agent':uas.desktop,accept:'text/html'}});
-            const cookie=home.headers.get('set-cookie')||'';
-            const cookieHeader=cookie.split(',').map(x=>x.split(';')[0]).join('; ');
-            const r=await fetch(short,{redirect:'manual',headers:{'user-agent':uas.desktop,accept:'text/html',cookie:cookieHeader,referer:'https://www.tiktok.com/'}});
-            console.log('COOKIE_SHORT','home',home.status,'cookieLen',cookieHeader.length,'status',r.status,'location',r.headers.get('location'));
-          } catch(e){console.log('COOKIE_ERR',e.message)}
-          for (const base of ['https://www.tiktok.com/oembed?url=','https://www.tiktok.com/oembed?url=']) {
-            try {
-              const u=base+encodeURIComponent(short);
-              const r=await fetch(u,{headers:{'user-agent':uas.desktop,accept:'application/json'}});
-              const t=await r.text();
-              console.log('OEMBED',r.status,'final',r.url,'body',t.slice(0,5000));
-            } catch(e){console.log('OEMBED_ERR',e.message)}
-            break;
-          }
-          // Try common public embed/share endpoints with the short URL as a query.
-          const extra=[
-            'https://www.tiktok.com/embed?url='+encodeURIComponent(short),
-            'https://www.tiktok.com/embed/v2?url='+encodeURIComponent(short),
-            'https://www.tiktok.com/player/v1?url='+encodeURIComponent(short),
-            'https://www.tiktok.com/share/video?url='+encodeURIComponent(short)
-          ];
-          for(const u of extra){
-            try{const r=await fetch(u,{redirect:'follow',headers:{'user-agent':uas.desktop,accept:'text/html,application/json'}});const t=await r.text();console.log('EXTRA',u,'status',r.status,'final',r.url,'body',t.slice(0,1200).replace(/\s+/g,' '));}catch(e){console.log('EXTRA_ERR',u,e.message)}
-          }
-          NODE
-      - run: echo official-diagnostic-finished
+          set -euo pipefail
+          git clone --depth=1 https://github.com/sharoon7171/tik-tok-downloader.git /tmp/tiktok-browser
+          cd /tmp/tiktok-browser
+          PORT=3000 npm start >/tmp/tiktok-browser.log 2>&1 &
+          PID=$!
+          cleanup() { kill "$PID" 2>/dev/null || true; }
+          trap cleanup EXIT
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:3000/ >/dev/null 2>&1; then break; fi
+            sleep 1
+          done
+          set +e
+          curl --max-time 180 -sS -D /tmp/headers.txt -o /tmp/result.bin \
+            -H 'Content-Type: application/json' \
+            --data '{"input":"https://vt.tiktok.com/ZSqsKvFLE"}' \
+            http://127.0.0.1:3000/api/download
+          CURL_EXIT=$?
+          set -e
+          echo "CURL_EXIT=$CURL_EXIT"
+          echo '--- RESPONSE HEADERS ---'
+          cat /tmp/headers.txt || true
+          echo '--- RESPONSE BYTES ---'
+          stat -c '%s' /tmp/result.bin || true
+          echo '--- RESPONSE PREFIX ---'
+          head -c 500 /tmp/result.bin | strings | head -20 || true
+          echo '--- SERVER LOG ---'
+          cat /tmp/tiktok-browser.log || true
+          if grep -qi '^Content-Type: video/mp4' /tmp/headers.txt; then
+            test "$(stat -c '%s' /tmp/result.bin)" -gt 100000
+            echo 'BROWSER_RESOLVER_VIDEO_OK=true'
+          else
+            echo 'BROWSER_RESOLVER_VIDEO_OK=false'
+            exit 1
+          fi
