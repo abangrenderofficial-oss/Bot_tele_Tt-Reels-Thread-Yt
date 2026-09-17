@@ -54,7 +54,7 @@ apiSource = replaceBetween(
   apiSource,
   'async function processStatusButton(callbackQuery) {',
   'async function prepareLiveFromSourceUrl(url, platform, baseUrl) {',
-  `${statusButtonFunction}async function prepareLiveFromSourceUrl(url, platform, baseUrl) {`,
+  statusButtonFunction,
 );
 
 // Remove the extra callback toast for Live Wallpaper; the progress message is the UI.
