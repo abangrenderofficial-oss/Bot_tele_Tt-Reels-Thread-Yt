@@ -40,7 +40,8 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  process:
+  status_hq:
+    if: ${{ inputs.action == 'status_hq' }}
     runs-on: ubuntu-latest
     timeout-minutes: 25
     env:
@@ -50,7 +51,7 @@ jobs:
       HEAVY_CHAT_ID: ${{ inputs.chat_id }}
       HEAVY_VIDEO_FILE_ID: ${{ inputs.video_file_id }}
       HEAVY_FILE_SIZE: ${{ inputs.file_size }}
-      HEAVY_ACTION: ${{ inputs.action }}
+      HEAVY_ACTION: status_hq
       HEAVY_PROGRESS_MESSAGE_ID: ${{ inputs.progress_message_id }}
       HEAVY_SOURCE_MESSAGE_ID: ${{ inputs.source_message_id }}
       HEAVY_VIDEO_MAX_MB: '500'
@@ -76,5 +77,45 @@ jobs:
       - name: Install MTProto client
         run: python -m pip install --disable-pip-version-check --quiet 'kurigram[fast]==2.2.26' requests
 
-      - name: Process and return media
+      - name: Process Status HQ
         run: python scripts/heavy_status_worker.py
+
+  live_wallpaper:
+    if: ${{ inputs.action == 'live_wallpaper' }}
+    runs-on: macos-15
+    timeout-minutes: 25
+    env:
+      TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
+      TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      HEAVY_CHAT_ID: ${{ inputs.chat_id }}
+      HEAVY_VIDEO_FILE_ID: ${{ inputs.video_file_id }}
+      HEAVY_FILE_SIZE: ${{ inputs.file_size }}
+      HEAVY_ACTION: live_wallpaper
+      HEAVY_PROGRESS_MESSAGE_ID: ${{ inputs.progress_message_id }}
+      HEAVY_SOURCE_MESSAGE_ID: ${{ inputs.source_message_id }}
+      HEAVY_VIDEO_MAX_MB: '500'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Ensure FFmpeg
+        shell: bash
+        run: |
+          if ! command -v ffmpeg >/dev/null 2>&1 || ! command -v ffprobe >/dev/null 2>&1; then
+            brew install ffmpeg
+          fi
+          ffmpeg -version | head -n 1
+          swift --version
+
+      - name: Install MTProto client
+        run: python -m pip install --disable-pip-version-check --quiet 'kurigram[fast]==2.2.26' requests
+
+      - name: Process native Apple Live Photo
+        run: python scripts/apple_live_worker.py
