@@ -183,9 +183,9 @@ def wallpaper_filter(probe):
     if needs_portrait_crop:
         return (
             'scale=1080:1920:force_original_aspect_ratio=increase:flags=lanczos,'
-            'crop=1080:1920,setsar=1,fps=30,setpts=PTS-STARTPTS'
+            'crop=1080:1920,setsar=1,fps=60,setpts=PTS-STARTPTS'
         )
-    return f'scale={width}:{height}:flags=lanczos,setsar=1,fps=30,setpts=PTS-STARTPTS'
+    return f'scale={width}:{height}:flags=lanczos,setsar=1,fps=60,setpts=PTS-STARTPTS'
 
 
 def encode_motion_and_cover(source, raw_movie, raw_cover, probe):
@@ -202,21 +202,17 @@ def encode_motion_and_cover(source, raw_movie, raw_cover, probe):
     # up to 6.5 Mbps; longer clips progressively use a lower bitrate.
     total_kbps = int((TARGET_MOTION_BYTES * 8 / duration / 1000) * 0.90)
     video_kbps = max(350, min(6500, total_kbps))
-    maxrate = max(video_kbps, int(video_kbps * 1.10))
-    bufsize = max(1000, maxrate * 2)
-
     run(
         [
             'ffmpeg', '-y', '-hide_banner', '-loglevel', 'error',
             '-i', str(source),
             '-t', f'{duration:.6f}', '-map', '0:v:0', '-an',
             '-vf', wallpaper_filter(probe),
-            '-c:v', 'libx264', '-preset', 'medium', '-pix_fmt', 'yuv420p',
-            '-profile:v', 'high', '-level:v', '4.0',
-            '-b:v', f'{video_kbps}k', '-maxrate', f'{maxrate}k', '-bufsize', f'{bufsize}k',
-            '-g', '30', '-keyint_min', '30', '-sc_threshold', '0',
-            '-movflags', '+faststart', '-map_metadata', '-1',
-            '-video_track_timescale', '60000', '-f', 'mov', str(raw_movie),
+            '-c:v', 'hevc_videotoolbox', '-profile:v', 'main', '-pix_fmt', 'yuv420p',
+            '-tag:v', 'hvc1', '-b:v', f'{video_kbps}k',
+            '-g', '60',
+            '-map_metadata', '-1',
+            '-video_track_timescale', '600', '-f', 'mov', str(raw_movie),
         ],
         timeout=900,
     )
@@ -228,7 +224,10 @@ def encode_motion_and_cover(source, raw_movie, raw_cover, probe):
             f'{raw_movie.stat().st_size / MB:.2f}MB.'
         )
 
-    still_at = max(0.0, duration * 0.5)
+    # Device-verified wallpaper pipelines use a cover continuous with the
+    # opening motion frame. Midpoint covers can make the Lock Screen animation
+    # control unavailable even when the Live Photo pair itself is valid.
+    still_at = 0.0
     run(
         [
             'ffmpeg', '-y', '-hide_banner', '-loglevel', 'error',
@@ -247,6 +246,28 @@ def encode_motion_and_cover(source, raw_movie, raw_cover, probe):
         'duration_mode': duration_mode,
         'video_kbps': video_kbps,
     }
+
+
+
+def prepare_wallpaper_metadata(raw_movie, prepared_movie):
+    # Inject the device-verified timed metadata template:
+    # live-photo-info + still-image-time/transform tracks with cdsc references
+    # back to the video track. This is the structure iOS Lock Screen uses beyond
+    # ordinary Live Photo recognition.
+    run(
+        [
+            'python3', 'scripts/prepare_wallpaper_video.py',
+            str(raw_movie), str(prepared_movie),
+        ],
+        timeout=180,
+    )
+    if not prepared_movie.exists() or prepared_movie.stat().st_size <= 0:
+        raise RuntimeError('Wallpaper metadata MOV tidak terhasil.')
+    if prepared_movie.stat().st_size > MAX_RAW_MOTION_BYTES:
+        raise RuntimeError(
+            f'Wallpaper metadata MOV terlalu besar: '
+            f'{prepared_movie.stat().st_size / MB:.2f}MB.'
+        )
 
 
 def pair_apple_live_photo(raw_cover, raw_movie, paired_cover, paired_movie):
@@ -320,6 +341,7 @@ def main():
         source = temp / 'source-video.bin'
         raw_movie = temp / 'motion-raw.mov'
         raw_cover = temp / 'cover-raw.jpg'
+        prepared_movie = temp / 'motion-wallpaper-metadata.mov'
         paired_movie = temp / 'live-wallpaper.mov'
         paired_cover = temp / 'live-wallpaper.jpg'
 
@@ -331,8 +353,15 @@ def main():
         clip = encode_motion_and_cover(source, raw_movie, raw_cover, probe)
         print(f'wallpaper_profile={clip}', flush=True)
 
-        set_progress(68)
-        pair_apple_live_photo(raw_cover, raw_movie, paired_cover, paired_movie)
+        set_progress(60)
+        prepare_wallpaper_metadata(raw_movie, prepared_movie)
+        print(
+            f'wallpaper metadata movie={prepared_movie.stat().st_size}',
+            flush=True,
+        )
+
+        set_progress(74)
+        pair_apple_live_photo(raw_cover, prepared_movie, paired_cover, paired_movie)
         print(
             f'paired sizes movie={paired_movie.stat().st_size} '
             f'photo={paired_cover.stat().st_size}',
