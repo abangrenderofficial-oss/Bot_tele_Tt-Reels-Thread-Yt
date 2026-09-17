@@ -1,6 +1,10 @@
 import { readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import ffmpegPath from 'ffmpeg-static';
 
+const execFileAsync = promisify(execFile);
 const DEFAULT_TELEGRAM_API_BASE = 'https://api.telegram.org';
 const DEFAULT_CLOUD_UPLOAD_LIMIT = 50 * 1024 * 1024;
 
@@ -92,6 +96,37 @@ function appendFormExtra(form, extra = {}) {
     if (typeof value === 'object') form.set(key, JSON.stringify(value));
     else form.set(key, String(value));
   }
+}
+
+async function probeTelegramVideoMetadata(filePath) {
+  if (!filePath || !ffmpegPath) return {};
+  let stderr = '';
+  try {
+    await execFileAsync(
+      ffmpegPath,
+      ['-hide_banner', '-i', filePath],
+      {
+        timeout: Number(process.env.TELEGRAM_VIDEO_PROBE_TIMEOUT_MS || 12000),
+        maxBuffer: 4 * 1024 * 1024,
+      },
+    );
+  } catch (error) {
+    stderr = String(error?.stderr || error?.message || '');
+  }
+
+  const dimensions = stderr.match(/Video:[^\n]*?\b(\d{2,5})x(\d{2,5})\b/i);
+  const durationMatch = stderr.match(/Duration:\s*(\d+):(\d{2}):(\d{2}(?:\.\d+)?)/i);
+  const width = dimensions ? Number(dimensions[1]) : 0;
+  const height = dimensions ? Number(dimensions[2]) : 0;
+  const duration = durationMatch
+    ? Math.max(1, Math.round((Number(durationMatch[1]) * 3600) + (Number(durationMatch[2]) * 60) + Number(durationMatch[3])))
+    : 0;
+
+  return {
+    ...(width > 0 ? { width } : {}),
+    ...(height > 0 ? { height } : {}),
+    ...(duration > 0 ? { duration } : {}),
+  };
 }
 
 async function parseTelegramResponse(response, method) {
@@ -238,11 +273,15 @@ export async function sendVideoFileUpload(chatId, filePath, caption = '', extra 
   const buffer = await readFile(filePath);
   const extension = path.extname(filePath).replace(/^\./, '').toLowerCase() || 'mp4';
   const contentType = extension === 'webm' ? 'video/webm' : extension === 'mov' ? 'video/quicktime' : 'video/mp4';
+  const probedMetadata = await probeTelegramVideoMetadata(filePath).catch(() => ({}));
   const form = new FormData();
   form.set('chat_id', String(chatId));
   form.set('caption', caption.slice(0, 1024));
   form.set('supports_streaming', 'true');
-  appendFormExtra(form, extra);
+  appendFormExtra(form, {
+    ...probedMetadata,
+    ...extra,
+  });
   form.set('video', new Blob([buffer], { type: contentType }), `video.${extension}`);
 
   const response = await fetch(telegramEndpoint('sendVideo'), {
