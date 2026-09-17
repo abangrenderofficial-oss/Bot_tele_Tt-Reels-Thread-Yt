@@ -1,5 +1,7 @@
 name: Debug Current TikTok URL
 on:
+  push:
+    branches: [debug/tiktok-current-url]
   workflow_dispatch:
 
 jobs:
