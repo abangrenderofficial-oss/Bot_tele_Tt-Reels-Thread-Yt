@@ -1,4 +1,4 @@
-name: Call discovered TikTok helper endpoints
+name: Inspect raw TikTok short-link response
 on:
   push:
     branches: [diag/tikwm-search-recover]
@@ -10,45 +10,24 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - name: Inspect endpoint call shapes and test exact short link
-        timeout-minutes: 5
+      - name: Dump redirect response safely
+        timeout-minutes: 3
         run: |
           node --input-type=module <<'NODE'
           const target='https://vt.tiktok.com/ZSqsKvFLE';
-          const ua='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/140.0 Safari/537.36';
-          const timeout=()=>AbortSignal.timeout(12000);
-          async function scripts(pageUrl){
-            const r=await fetch(pageUrl,{headers:{'user-agent':ua},signal:timeout()});
-            const html=await r.text();
-            return [...html.matchAll(/<script[^>]+src=["']([^"']+)["']/gi)].map(m=>new URL(m[1],pageUrl).toString());
+          const uas=[
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/140.0 Safari/537.36',
+            'Mozilla/5.0 (iPhone; CPU iPhone OS 18_6 like Mac OS X) AppleWebKit/605.1.15 Version/18.6 Mobile/15E148 Safari/604.1'
+          ];
+          for(const ua of uas){
+            const r=await fetch(target,{redirect:'manual',headers:{'user-agent':ua,accept:'*/*','accept-language':'en-US,en;q=0.9'},signal:AbortSignal.timeout(12000)});
+            const headers=Object.fromEntries([...r.headers.entries()].filter(([k])=>!['set-cookie'].includes(k.toLowerCase())));
+            const body=await r.text();
+            console.log('\nSTATUS',r.status,'URL',r.url,'HEADERS',JSON.stringify(headers,null,2),'BODY_LEN',body.length,'BODY',body.slice(0,10000));
+            const ids=[...body.matchAll(/\b\d{17,20}\b/g)].map(m=>m[0]);
+            const urls=[...body.matchAll(/https?:\/\/[^"'<>\s]+/g)].map(m=>m[0]);
+            console.log('NUMERIC_IDS',ids.slice(0,50));
+            console.log('BODY_URLS',urls.slice(0,50));
           }
-          async function context(pageUrl,needle){
-            for(const s of await scripts(pageUrl)){
-              try{
-                const r=await fetch(s,{headers:{'user-agent':ua},signal:timeout()});
-                const js=await r.text();
-                let from=0, n=0;
-                while((from=js.indexOf(needle,from))>=0 && n<5){
-                  console.log('\nCTX',pageUrl,needle,'SCRIPT',s,'\n',js.slice(Math.max(0,from-1000),Math.min(js.length,from+1800)));
-                  from+=needle.length;n++;
-                }
-              }catch(e){console.log('CTX_ERR',s,e?.message||e)}
-            }
-          }
-          async function call(name,url,opts={}){
-            try{
-              const r=await fetch(url,{...opts,headers:{'user-agent':ua,accept:'application/json,text/plain,*/*',...(opts.headers||{})},signal:timeout()});
-              const text=await r.text();
-              console.log('\nCALL',name,'HTTP',r.status,'TYPE',r.headers.get('content-type'),'BODY',text.slice(0,8000));
-            }catch(e){console.log('\nCALL_ERR',name,e?.stack||e)}
-          }
-          await context('https://peektok.net/copy-tiktok-link/','/api/lookup');
-          await context('https://watchtiktokwithoutapp.com/','/api/expand');
-          await call('PEEK_LOOKUP_POST_URL','https://peektok.net/api/lookup',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({url:target})});
-          await call('PEEK_LOOKUP_POST_QUERY','https://peektok.net/api/lookup',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({query:target})});
-          await call('PEEK_LOOKUP_POST_INPUT','https://peektok.net/api/lookup',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({input:target})});
-          await call('WATCH_EXPAND_POST_URL','https://watchtiktokwithoutapp.com/api/expand',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({url:target})});
-          await call('WATCH_EXPAND_POST_LINK','https://watchtiktokwithoutapp.com/api/expand',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({link:target})});
-          await call('WATCH_EXPAND_FORM','https://watchtiktokwithoutapp.com/api/expand',{method:'POST',headers:{'content-type':'application/x-www-form-urlencoded'},body:new URLSearchParams({url:target})});
           NODE
-      - run: echo discovered-helper-call-v1
+      - run: echo raw-redirect-probe-v1
