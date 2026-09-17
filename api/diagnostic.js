@@ -1,4 +1,5 @@
-import { parseMedia, chooseBestVideo } from '../src/downloader.js';
+import { detectPlatform } from '../src/platform.js';
+import { chooseBestVideo, resolveMedia } from '../src/bot/media-resolver.js';
 
 const CASES = {
   reels: 'https://www.instagram.com/reel/DdVLsscjj2o/?stkn=MXV3a2hncmE3cWZheQ==',
@@ -35,20 +36,21 @@ async function probeMedia(item) {
 export default async function handler(req, res) {
   const key = String(req.query?.case || '').toLowerCase();
   const url = CASES[key];
-  if (!url) {
-    return res.status(400).json({ ok: false, cases: Object.keys(CASES) });
-  }
+  if (!url) return res.status(400).json({ ok: false, cases: Object.keys(CASES) });
 
+  const platform = detectPlatform(url);
   const started = Date.now();
   try {
-    const media = await parseMedia(url);
-    const best = chooseBestVideo(media.videos);
+    const media = await resolveMedia(platform, url);
+    const best = chooseBestVideo(media.videos || []);
     const firstMedia = best || media.images?.[0] || media.audios?.[0] || null;
     const probe = await probeMedia(firstMedia);
     return res.status(200).json({
       ok: Boolean(firstMedia) && probe.ok,
       extracted: true,
       case: key,
+      platform,
+      architecture: 'isolated-resolver-v1',
       ms: Date.now() - started,
       title: media.title || '',
       videos: media.videos?.length || 0,
@@ -69,6 +71,7 @@ export default async function handler(req, res) {
       ok: false,
       extracted: false,
       case: key,
+      platform,
       ms: Date.now() - started,
       code: error?.code || 'ERROR',
       error: String(error?.message || error).slice(0, 1800),
