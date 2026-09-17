@@ -12,9 +12,9 @@ const replacement = `const START_TEXT = [
   '• Threads',
   '• YouTube / Shorts / unlisted',
   '',
-  'Bot akan cuba hantar media terus dalam chat.',
+  'Bot akan cuba hantar semula media dalam chat dan user boleh download.',
   '',
-  'Boleh juga upload media dari gallery untuk:',
+  'Boleh juga upload media video atau photo dari gallery untuk:',
   '• 📱 Status HQ',
   '• 🍎 Live Wallpaper iPhone',
 ].join('\\n');`;
