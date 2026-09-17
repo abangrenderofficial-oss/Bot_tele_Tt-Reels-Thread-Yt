@@ -1,4 +1,4 @@
-name: Diagnose TikTok short-link resolution
+name: Probe public TikTok link helpers
 on:
   push:
     branches: [diag/tikwm-search-recover]
@@ -10,33 +10,60 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - name: Probe exact short link
+      - name: Inspect helper backends and exact short link
+        timeout-minutes: 5
         run: |
           node --input-type=module <<'NODE'
-          const link='https://vt.tiktok.com/ZSqsKvFLE';
-          const uas={
-            desktop:'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/140.0 Safari/537.36',
-            iphone:'Mozilla/5.0 (iPhone; CPU iPhone OS 18_6 like Mac OS X) AppleWebKit/605.1.15 Version/18.6 Mobile/15E148 Safari/604.1',
-            android:'Mozilla/5.0 (Linux; Android 15; Pixel 9 Pro) AppleWebKit/537.36 Chrome/140.0 Mobile Safari/537.36',
-            googlebot:'Mozilla/5.0 (Linux; Android 6.0.1; Nexus 5X Build/MMB29P) AppleWebKit/537.36 Chrome/41.0.2272.96 Mobile Safari/537.36 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)',
-            facebook:'facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)',
-            twitter:'Twitterbot/1.0',
-            tiktokapp:'com.zhiliaoapp.musically/2023600030 (Linux; U; Android 13; en_US; Pixel 7; Build/TQ3A.230805.001; Cronet/TTNetVersion:4d8a3f91 2023-08-01 QuicVersion:47946d2a 2023-07-11)'
-          };
-          for (const [name,ua] of Object.entries(uas)) {
+          const target='https://vt.tiktok.com/ZSqsKvFLE';
+          const ua='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/140.0 Safari/537.36';
+          const timeout=()=>AbortSignal.timeout(12000);
+
+          async function inspectSite(base,path) {
             try {
-              const r=await fetch(link,{redirect:'manual',headers:{'user-agent':ua,'accept-language':'en-US,en;q=0.9',accept:'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'}});
-              console.log('REDIRECT',name,r.status,r.headers.get('location'),'SETCOOKIE',String(r.headers.get('set-cookie')||'').slice(0,180));
-            } catch(e) { console.log('REDIRECT_ERR',name,e?.message||e); }
+              const pageUrl=new URL(path,base).toString();
+              const r=await fetch(pageUrl,{headers:{'user-agent':ua,accept:'text/html'},signal:timeout()});
+              const html=await r.text();
+              console.log('\nSITE',pageUrl,'HTTP',r.status,'LEN',html.length);
+              const scripts=[...html.matchAll(/<script[^>]+src=["']([^"']+)["']/gi)].map(m=>new URL(m[1],pageUrl).toString());
+              console.log('SCRIPTS',scripts.length,scripts.slice(-15));
+              const patterns=[];
+              for (const s of scripts.slice(-20)) {
+                try {
+                  const sr=await fetch(s,{headers:{'user-agent':ua},signal:timeout()});
+                  const js=await sr.text();
+                  const hits=[...js.matchAll(/(?:https?:\\?\/\\?\/[^"'`\\s)]+|\/[A-Za-z0-9_.~-]*(?:api|resolve|expand|tiktok|lookup|clean)[A-Za-z0-9_./?&=:%~-]*)/gi)].map(x=>x[0]);
+                  for(const h of hits){ if(!patterns.includes(h)) patterns.push(h); }
+                } catch(e) { console.log('SCRIPT_ERR',s,e?.message||e); }
+              }
+              console.log('ENDPOINT_HINTS',patterns.slice(0,120));
+              return {html,scripts,patterns,pageUrl};
+            } catch(e) { console.log('SITE_ERR',base,path,e?.stack||e); return null; }
           }
 
-          for (const input of [link, link+'/', link+'?is_from_webapp=1&sender_device=pc', link+'?_r=1']) {
+          async function call(name,url,options={}) {
             try {
-              const u='https://www.tiktok.com/oembed?url='+encodeURIComponent(input);
-              const r=await fetch(u,{headers:{'user-agent':uas.desktop,accept:'application/json'}});
-              const txt=await r.text();
-              console.log('OEMBED',input,r.status,txt.slice(0,2000));
-            } catch(e) { console.log('OEMBED_ERR',input,e?.message||e); }
+              const r=await fetch(url,{...options,headers:{'user-agent':ua,accept:'application/json,text/plain,*/*',...(options.headers||{})},signal:timeout()});
+              const text=await r.text();
+              console.log('\nCALL',name,'HTTP',r.status,'URL',r.url,'TYPE',r.headers.get('content-type'),'BODY',text.slice(0,5000));
+            } catch(e) { console.log('\nCALL_ERR',name,e?.stack||e); }
           }
+
+          await call('DOMAINEE','https://api.domainee.dev/v1/tools/redirect-checker?url='+encodeURIComponent(target));
+          await call('URLTOSHORTURL','https://www.urltoshorturl.appspot.com/expand?url='+encodeURIComponent(target));
+
+          const peek=await inspectSite('https://peektok.net','/copy-tiktok-link/');
+          const watch=await inspectSite('https://watchtiktokwithoutapp.com','/');
+
+          // Probe common first-party helper endpoint shapes discovered/likely from static apps.
+          const probes=[
+            ['PEEK_RESOLVE_GET','https://peektok.net/api/resolve?url='+encodeURIComponent(target),{}],
+            ['PEEK_NORMALIZE_GET','https://peektok.net/api/normalize?url='+encodeURIComponent(target),{}],
+            ['PEEK_LOOKUP_GET','https://peektok.net/api/lookup?url='+encodeURIComponent(target),{}],
+            ['PEEK_RESOLVE_POST','https://peektok.net/api/resolve',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({url:target})}],
+            ['WATCH_RESOLVE_GET','https://watchtiktokwithoutapp.com/api/resolve?url='+encodeURIComponent(target),{}],
+            ['WATCH_EXPAND_GET','https://watchtiktokwithoutapp.com/api/expand?url='+encodeURIComponent(target),{}],
+            ['WATCH_RESOLVE_POST','https://watchtiktokwithoutapp.com/api/resolve',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({url:target})}],
+          ];
+          for(const [n,u,o] of probes) await call(n,u,o);
           NODE
-      - run: echo tiktok-resolution-probe-v1
+      - run: echo helper-probe-v1
