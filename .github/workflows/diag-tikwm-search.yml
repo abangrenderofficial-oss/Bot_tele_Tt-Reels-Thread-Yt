@@ -1,4 +1,4 @@
-name: Search TikWM feed via POST
+name: Probe ClipX and Cobalt TikTok resolvers
 on:
   push:
     branches: [diag/tikwm-search-recover]
@@ -10,41 +10,26 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - name: Search exact target metadata
+      - name: Probe exact TikTok short link
         timeout-minutes: 5
         run: |
           node --input-type=module <<'NODE'
-          const queries=['2020 vibes #4k60fps #anime #aesthetic #harusq #bakerysqd','2020 vibes','harusq','bakerysqd'];
-          const cursors=['0','30','60','90'];
-          const ua='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/140.0 Safari/537.36';
-          for (const q of queries) {
-            for (const cursor of cursors) {
-              try {
-                const body=new URLSearchParams({keywords:q,count:'30',cursor,web:'1',hd:'1'});
-                const r=await fetch('https://www.tikwm.com/api/feed/search',{
-                  method:'POST',
-                  headers:{accept:'application/json','content-type':'application/x-www-form-urlencoded;charset=UTF-8','user-agent':ua,referer:'https://www.tikwm.com/',origin:'https://www.tikwm.com'},
-                  body,
-                  signal:AbortSignal.timeout(15000),
-                });
-                const text=await r.text();
-                let j=null; try{j=JSON.parse(text)}catch{}
-                const arr=Array.isArray(j?.data?.videos)?j.data.videos:(Array.isArray(j?.data)?j.data:[]);
-                console.log('SEARCH',JSON.stringify(q),'CURSOR',cursor,'HTTP',r.status,'CODE',j?.code,'MSG',j?.msg,'COUNT',arr.length,'RAW',j?'' : text.slice(0,300));
-                for(const v of arr){
-                  const title=String(v.title||v.desc||'').replace(/\s+/g,' ').trim();
-                  const low=title.toLowerCase();
-                  const score=['2020 vibes','4k60fps','harusq','bakerysqd'].filter(x=>low.includes(x)).length;
-                  if(score>=2 || (low.includes('2020 vibes') && low.includes('harusq'))){
-                    const id=v.video_id||v.id||v.aweme_id||'';
-                    const author=v.author?.unique_id||v.author?.uniqueId||v.author?.nickname||v.author||'';
-                    console.log('MATCH SCORE',score,'ID',id,'AUTHOR',author,'TITLE',title.slice(0,500));
-                    console.log('PLAY',String(v.play||v.play_addr||'').slice(0,800));
-                    console.log('HDPLAY',String(v.hdplay||'').slice(0,800));
-                  }
-                }
-              } catch(e) { console.log('SEARCH_ERR',JSON.stringify(q),cursor,e?.message||e); }
-            }
+          const link='https://vt.tiktok.com/ZSqsKvFLE';
+          const ua='AbangRenderBot/1.0 (+https://github.com/abangrenderofficial-oss/Bot_tele_Tt-Reels-Thread-Yt)';
+          async function clip(){
+            try {
+              const u='https://clipx.zamdev.workers.dev/?url='+encodeURIComponent(link);
+              const r=await fetch(u,{headers:{accept:'application/json','user-agent':ua},signal:AbortSignal.timeout(30000)});
+              console.log('CLIPX',r.status,(await r.text()).slice(0,5000));
+            } catch(e) { console.log('CLIPX_ERR',e?.message||e); }
           }
+          async function cobalt(api){
+            try {
+              const r=await fetch('https://'+api+'/',{method:'POST',headers:{accept:'application/json','content-type':'application/json','user-agent':ua},body:JSON.stringify({url:link}),signal:AbortSignal.timeout(30000)});
+              console.log('COBALT',api,r.status,(await r.text()).slice(0,3000));
+            } catch(e) { console.log('COBALT_ERR',api,e?.message||e); }
+          }
+          await clip();
+          for(const api of ['cobalt-api.meowing.de','cobalt-backend.canine.tools','capi.3kh0.net','kityune.imput.net','nachos.imput.net','sunny.imput.net','blossom.imput.net','downloadapi.stuff.solutions']) await cobalt(api);
           NODE
-      - run: echo tikwm-feed-post-v1
+      - run: echo clipx-cobalt-v1
