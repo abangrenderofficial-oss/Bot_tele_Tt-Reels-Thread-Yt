@@ -6,6 +6,7 @@ on:
     paths:
       - 'scripts/apple_live_photo_pair.swift'
       - 'scripts/apple_live_worker.py'
+      - 'scripts/prepare_wallpaper_video.py'
       - '.github/workflows/heavy-status-hq.yml'
       - '.github/workflows/apple-live-photo-smoke.yml'
   workflow_dispatch:
@@ -25,19 +26,20 @@ jobs:
             brew install ffmpeg
           fi
           ffmpeg -version | head -n 1
+          ffmpeg -hide_banner -encoders 2>/dev/null | grep hevc_videotoolbox
           swift --version
 
-      - name: Check Apple worker Python syntax
-        run: python3 -m py_compile scripts/apple_live_worker.py
+      - name: Check wallpaper worker syntax
+        run: |
+          python3 -m py_compile scripts/apple_live_worker.py
+          python3 -m py_compile scripts/prepare_wallpaper_video.py
 
       - name: Build native Apple pairer
         run: swiftc scripts/apple_live_photo_pair.swift -o /tmp/apple-live-pair
 
-      - name: Generate wallpaper-profile motion
+      - name: Generate HEVC 60fps wallpaper motion
         shell: bash
         run: |
-          # Start from landscape on purpose so the test exercises the dedicated
-          # portrait conversion used only by the Live Wallpaper worker.
           ffmpeg -y -hide_banner -loglevel error \
             -f lavfi -i 'testsrc2=size=1280x720:rate=60' \
             -t 4 \
@@ -45,42 +47,71 @@ jobs:
             /tmp/source.mp4
 
           ffmpeg -y -hide_banner -loglevel error \
-            -ss 0.12 -i /tmp/source.mp4 -t 1.5 \
+            -i /tmp/source.mp4 -t 1.5 \
             -map 0:v:0 -an \
-            -vf 'scale=1080:1920:force_original_aspect_ratio=increase:flags=lanczos,crop=1080:1920,setsar=1,fps=30,setpts=PTS-STARTPTS' \
-            -c:v libx264 -preset medium -pix_fmt yuv420p \
-            -profile:v high -level:v 4.0 \
-            -b:v 6500k -maxrate 7150k -bufsize 14300k \
-            -g 30 -keyint_min 30 -sc_threshold 0 \
-            -movflags +faststart -map_metadata -1 \
-            -video_track_timescale 60000 -f mov /tmp/raw.mov
+            -vf 'scale=1080:1920:force_original_aspect_ratio=increase:flags=lanczos,crop=1080:1920,setsar=1,fps=60,setpts=PTS-STARTPTS' \
+            -c:v hevc_videotoolbox -profile:v main -pix_fmt yuv420p \
+            -tag:v hvc1 -b:v 5000k -g 60 \
+            -map_metadata -1 -video_track_timescale 600 \
+            -f mov /tmp/raw.mov
 
           ffmpeg -y -hide_banner -loglevel error \
-            -ss 0.75 -i /tmp/raw.mov -frames:v 1 -q:v 2 /tmp/raw.jpg
+            -ss 0 -i /tmp/raw.mov -frames:v 1 -q:v 2 /tmp/raw.jpg
 
       - name: Validate wallpaper media profile
         shell: bash
         run: |
-          read width height fps duration <<<"$(ffprobe -v error -select_streams v:0 \
-            -show_entries stream=width,height,r_frame_rate:format=duration \
-            -of default=noprint_wrappers=1:nokey=1 /tmp/raw.mov | tr '\n' ' ')"
-          echo "width=$width height=$height fps=$fps duration=$duration"
-          test "$width" = "1080"
-          test "$height" = "1920"
-          test "$fps" = "30/1"
           python3 - <<'PY'
-          import json, subprocess
+          import json
+          import subprocess
+
           payload = json.loads(subprocess.check_output([
-              'ffprobe', '-v', 'error', '-show_entries', 'format=duration',
+              'ffprobe', '-v', 'error', '-select_streams', 'v:0',
+              '-show_entries',
+              'stream=width,height,r_frame_rate,time_base,codec_name,codec_tag_string:format=duration',
               '-of', 'json', '/tmp/raw.mov'
           ], text=True))
+          stream = payload['streams'][0]
           duration = float(payload['format']['duration'])
-          assert 1.35 <= duration <= 1.60, duration
+          print(stream, 'duration=', duration)
+          assert stream['width'] == 1080
+          assert stream['height'] == 1920
+          assert stream['codec_name'] == 'hevc'
+          assert stream['codec_tag_string'] == 'hvc1'
+          assert stream['r_frame_rate'] == '60/1'
+          assert stream['time_base'] == '1/600'
+          assert 1.35 <= duration <= 1.60
           PY
 
-      - name: Pair and verify Apple Live Photo
+      - name: Inject wallpaper mebx and cdsc structure
         run: |
-          /tmp/apple-live-pair /tmp/raw.jpg /tmp/raw.mov /tmp/paired.jpg /tmp/paired.mov
+          python3 scripts/prepare_wallpaper_video.py /tmp/raw.mov /tmp/prepared.mov
+          test -s /tmp/prepared.mov
+          python3 - <<'PY'
+          from pathlib import Path
+          data = Path('/tmp/prepared.mov').read_bytes()
+          required = [
+              b'com.apple.quicktime.live-photo-info',
+              b'com.apple.quicktime.live-photo-still-image-transform',
+              b'com.apple.quicktime.still-image-time',
+          ]
+          for key in required:
+              assert key in data, key
+          assert data.count(b'cdsc') >= 2, data.count(b'cdsc')
+          print('prepared cdsc=', data.count(b'cdsc'))
+          PY
+
+      - name: Pair without dropping wallpaper tracks
+        run: |
+          /tmp/apple-live-pair /tmp/raw.jpg /tmp/prepared.mov /tmp/paired.jpg /tmp/paired.mov
           test -s /tmp/paired.jpg
           test -s /tmp/paired.mov
+          python3 - <<'PY'
+          from pathlib import Path
+          data = Path('/tmp/paired.mov').read_bytes()
+          assert data.count(b'cdsc') >= 2, data.count(b'cdsc')
+          assert b'com.apple.quicktime.live-photo-info' in data
+          assert b'com.apple.quicktime.live-photo-still-image-transform' in data
+          print('paired cdsc=', data.count(b'cdsc'))
+          PY
           ls -lh /tmp/paired.jpg /tmp/paired.mov
