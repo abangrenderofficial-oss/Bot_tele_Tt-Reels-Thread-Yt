@@ -1,4 +1,4 @@
-name: Probe ClipX and Cobalt TikTok resolvers
+name: Probe GoDownloader TikTok resolver
 on:
   push:
     branches: [diag/tikwm-search-recover]
@@ -11,25 +11,21 @@ jobs:
         with:
           node-version: '22'
       - name: Probe exact TikTok short link
-        timeout-minutes: 5
+        timeout-minutes: 3
         run: |
           node --input-type=module <<'NODE'
           const link='https://vt.tiktok.com/ZSqsKvFLE';
-          const ua='AbangRenderBot/1.0 (+https://github.com/abangrenderofficial-oss/Bot_tele_Tt-Reels-Thread-Yt)';
-          async function clip(){
-            try {
-              const u='https://clipx.zamdev.workers.dev/?url='+encodeURIComponent(link);
-              const r=await fetch(u,{headers:{accept:'application/json','user-agent':ua},signal:AbortSignal.timeout(30000)});
-              console.log('CLIPX',r.status,(await r.text()).slice(0,5000));
-            } catch(e) { console.log('CLIPX_ERR',e?.message||e); }
+          const ua='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/140.0 Safari/537.36';
+          const tests=[
+            ['GODOWN','https://godownloader.com/api/tiktok-no-watermark-free?url='+encodeURIComponent(link)+'&key=godownloader.com'],
+            ['PREXZY','https://prexzyapis.com/api/download/tiktok?url='+encodeURIComponent(link)],
+            ['PREXZY2','https://prexzyapis.com/downloader/tiktok?url='+encodeURIComponent(link)]
+          ];
+          for(const [name,url] of tests){
+            try{
+              const r=await fetch(url,{headers:{accept:'application/json,*/*','user-agent':ua},redirect:'follow',signal:AbortSignal.timeout(30000)});
+              console.log(name,r.status,r.url,(await r.text()).slice(0,6000));
+            }catch(e){console.log(name+'_ERR',e?.message||e)}
           }
-          async function cobalt(api){
-            try {
-              const r=await fetch('https://'+api+'/',{method:'POST',headers:{accept:'application/json','content-type':'application/json','user-agent':ua},body:JSON.stringify({url:link}),signal:AbortSignal.timeout(30000)});
-              console.log('COBALT',api,r.status,(await r.text()).slice(0,3000));
-            } catch(e) { console.log('COBALT_ERR',api,e?.message||e); }
-          }
-          await clip();
-          for(const api of ['cobalt-api.meowing.de','cobalt-backend.canine.tools','capi.3kh0.net','kityune.imput.net','nachos.imput.net','sunny.imput.net','blossom.imput.net','downloadapi.stuff.solutions']) await cobalt(api);
           NODE
-      - run: echo clipx-cobalt-v1
+      - run: echo godown-probe-v1
