@@ -1,4 +1,4 @@
-name: Probe GoDownloader TikTok resolver
+name: Probe SnapTik library
 on:
   push:
     branches: [diag/tikwm-search-recover]
@@ -7,25 +7,30 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-python@v5
         with:
-          node-version: '22'
-      - name: Probe exact TikTok short link
-        timeout-minutes: 3
+          python-version: '3.12'
+      - name: Install TikTok downloader probe
         run: |
-          node --input-type=module <<'NODE'
-          const link='https://vt.tiktok.com/ZSqsKvFLE';
-          const ua='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/140.0 Safari/537.36';
-          const tests=[
-            ['GODOWN','https://godownloader.com/api/tiktok-no-watermark-free?url='+encodeURIComponent(link)+'&key=godownloader.com'],
-            ['PREXZY','https://prexzyapis.com/api/download/tiktok?url='+encodeURIComponent(link)],
-            ['PREXZY2','https://prexzyapis.com/downloader/tiktok?url='+encodeURIComponent(link)]
-          ];
-          for(const [name,url] of tests){
-            try{
-              const r=await fetch(url,{headers:{accept:'application/json,*/*','user-agent':ua},redirect:'follow',signal:AbortSignal.timeout(30000)});
-              console.log(name,r.status,r.url,(await r.text()).slice(0,6000));
-            }catch(e){console.log(name+'_ERR',e?.message||e)}
-          }
-          NODE
-      - run: echo godown-probe-v1
+          python -m pip install --upgrade pip
+          python -m pip install git+https://github.com/krypton-byte/tiktok-downloader.git
+      - name: Probe exact TikTok short link
+        timeout-minutes: 4
+        run: |
+          python - <<'PY'
+          import traceback
+          from tiktok_downloader import snaptik
+          link='https://vt.tiktok.com/ZSqsKvFLE'
+          try:
+              media=snaptik(link)
+              print('SNAPTIK_COUNT', len(media))
+              for i,m in enumerate(media):
+                  print('ITEM', i, repr(m))
+                  for key in ('url','download_url','type'):
+                      try: print(key, getattr(m,key,None))
+                      except Exception as e: print(key,'ERR',e)
+          except Exception as e:
+              print('SNAPTIK_ERR',type(e).__name__,str(e))
+              traceback.print_exc()
+          PY
+      - run: echo snaptik-library-v1
