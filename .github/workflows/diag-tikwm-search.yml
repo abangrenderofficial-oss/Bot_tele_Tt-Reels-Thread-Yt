@@ -1,4 +1,4 @@
-name: Probe public TikTok link helpers
+name: Call discovered TikTok helper endpoints
 on:
   push:
     branches: [diag/tikwm-search-recover]
@@ -10,60 +10,45 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - name: Inspect helper backends and exact short link
+      - name: Inspect endpoint call shapes and test exact short link
         timeout-minutes: 5
         run: |
           node --input-type=module <<'NODE'
           const target='https://vt.tiktok.com/ZSqsKvFLE';
           const ua='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/140.0 Safari/537.36';
           const timeout=()=>AbortSignal.timeout(12000);
-
-          async function inspectSite(base,path) {
-            try {
-              const pageUrl=new URL(path,base).toString();
-              const r=await fetch(pageUrl,{headers:{'user-agent':ua,accept:'text/html'},signal:timeout()});
-              const html=await r.text();
-              console.log('\nSITE',pageUrl,'HTTP',r.status,'LEN',html.length);
-              const scripts=[...html.matchAll(/<script[^>]+src=["']([^"']+)["']/gi)].map(m=>new URL(m[1],pageUrl).toString());
-              console.log('SCRIPTS',scripts.length,scripts.slice(-15));
-              const patterns=[];
-              for (const s of scripts.slice(-20)) {
-                try {
-                  const sr=await fetch(s,{headers:{'user-agent':ua},signal:timeout()});
-                  const js=await sr.text();
-                  const hits=[...js.matchAll(/(?:https?:\\?\/\\?\/[^"'`\\s)]+|\/[A-Za-z0-9_.~-]*(?:api|resolve|expand|tiktok|lookup|clean)[A-Za-z0-9_./?&=:%~-]*)/gi)].map(x=>x[0]);
-                  for(const h of hits){ if(!patterns.includes(h)) patterns.push(h); }
-                } catch(e) { console.log('SCRIPT_ERR',s,e?.message||e); }
-              }
-              console.log('ENDPOINT_HINTS',patterns.slice(0,120));
-              return {html,scripts,patterns,pageUrl};
-            } catch(e) { console.log('SITE_ERR',base,path,e?.stack||e); return null; }
+          async function scripts(pageUrl){
+            const r=await fetch(pageUrl,{headers:{'user-agent':ua},signal:timeout()});
+            const html=await r.text();
+            return [...html.matchAll(/<script[^>]+src=["']([^"']+)["']/gi)].map(m=>new URL(m[1],pageUrl).toString());
           }
-
-          async function call(name,url,options={}) {
-            try {
-              const r=await fetch(url,{...options,headers:{'user-agent':ua,accept:'application/json,text/plain,*/*',...(options.headers||{})},signal:timeout()});
+          async function context(pageUrl,needle){
+            for(const s of await scripts(pageUrl)){
+              try{
+                const r=await fetch(s,{headers:{'user-agent':ua},signal:timeout()});
+                const js=await r.text();
+                let from=0, n=0;
+                while((from=js.indexOf(needle,from))>=0 && n<5){
+                  console.log('\nCTX',pageUrl,needle,'SCRIPT',s,'\n',js.slice(Math.max(0,from-1000),Math.min(js.length,from+1800)));
+                  from+=needle.length;n++;
+                }
+              }catch(e){console.log('CTX_ERR',s,e?.message||e)}
+            }
+          }
+          async function call(name,url,opts={}){
+            try{
+              const r=await fetch(url,{...opts,headers:{'user-agent':ua,accept:'application/json,text/plain,*/*',...(opts.headers||{})},signal:timeout()});
               const text=await r.text();
-              console.log('\nCALL',name,'HTTP',r.status,'URL',r.url,'TYPE',r.headers.get('content-type'),'BODY',text.slice(0,5000));
-            } catch(e) { console.log('\nCALL_ERR',name,e?.stack||e); }
+              console.log('\nCALL',name,'HTTP',r.status,'TYPE',r.headers.get('content-type'),'BODY',text.slice(0,8000));
+            }catch(e){console.log('\nCALL_ERR',name,e?.stack||e)}
           }
-
-          await call('DOMAINEE','https://api.domainee.dev/v1/tools/redirect-checker?url='+encodeURIComponent(target));
-          await call('URLTOSHORTURL','https://www.urltoshorturl.appspot.com/expand?url='+encodeURIComponent(target));
-
-          const peek=await inspectSite('https://peektok.net','/copy-tiktok-link/');
-          const watch=await inspectSite('https://watchtiktokwithoutapp.com','/');
-
-          // Probe common first-party helper endpoint shapes discovered/likely from static apps.
-          const probes=[
-            ['PEEK_RESOLVE_GET','https://peektok.net/api/resolve?url='+encodeURIComponent(target),{}],
-            ['PEEK_NORMALIZE_GET','https://peektok.net/api/normalize?url='+encodeURIComponent(target),{}],
-            ['PEEK_LOOKUP_GET','https://peektok.net/api/lookup?url='+encodeURIComponent(target),{}],
-            ['PEEK_RESOLVE_POST','https://peektok.net/api/resolve',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({url:target})}],
-            ['WATCH_RESOLVE_GET','https://watchtiktokwithoutapp.com/api/resolve?url='+encodeURIComponent(target),{}],
-            ['WATCH_EXPAND_GET','https://watchtiktokwithoutapp.com/api/expand?url='+encodeURIComponent(target),{}],
-            ['WATCH_RESOLVE_POST','https://watchtiktokwithoutapp.com/api/resolve',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({url:target})}],
-          ];
-          for(const [n,u,o] of probes) await call(n,u,o);
+          await context('https://peektok.net/copy-tiktok-link/','/api/lookup');
+          await context('https://watchtiktokwithoutapp.com/','/api/expand');
+          await call('PEEK_LOOKUP_POST_URL','https://peektok.net/api/lookup',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({url:target})});
+          await call('PEEK_LOOKUP_POST_QUERY','https://peektok.net/api/lookup',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({query:target})});
+          await call('PEEK_LOOKUP_POST_INPUT','https://peektok.net/api/lookup',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({input:target})});
+          await call('WATCH_EXPAND_POST_URL','https://watchtiktokwithoutapp.com/api/expand',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({url:target})});
+          await call('WATCH_EXPAND_POST_LINK','https://watchtiktokwithoutapp.com/api/expand',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({link:target})});
+          await call('WATCH_EXPAND_FORM','https://watchtiktokwithoutapp.com/api/expand',{method:'POST',headers:{'content-type':'application/x-www-form-urlencoded'},body:new URLSearchParams({url:target})});
           NODE
-      - run: echo helper-probe-v1
+      - run: echo discovered-helper-call-v1
