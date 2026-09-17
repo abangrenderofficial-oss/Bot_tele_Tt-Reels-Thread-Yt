@@ -1,4 +1,4 @@
-name: Heavy Media 250MB
+name: Heavy Media 500MB
 
 on:
   workflow_dispatch:
@@ -53,7 +53,7 @@ jobs:
       HEAVY_ACTION: ${{ inputs.action }}
       HEAVY_PROGRESS_MESSAGE_ID: ${{ inputs.progress_message_id }}
       HEAVY_SOURCE_MESSAGE_ID: ${{ inputs.source_message_id }}
-      HEAVY_VIDEO_MAX_MB: '250'
+      HEAVY_VIDEO_MAX_MB: '500'
 
     steps:
       - name: Checkout
