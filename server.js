@@ -8,6 +8,9 @@ import setupWebhookHandler from './api/setup-webhook.js';
 import mediaHandler from './api/media.js';
 import diagnosticHandler from './api/diagnostic.js';
 import statusDiagnosticHandler from './api/status-diagnostic.js';
+import { parseMedia, chooseBestVideo } from './src/downloader.js';
+import { prepareWhatsAppStatusHQ } from './src/status-hq.js';
+import { sendVideoFileUpload } from './src/telegram.js';
 
 const MAX_BODY_BYTES = 5 * 1024 * 1024;
 
@@ -95,6 +98,63 @@ async function parseBody(req) {
   return raw;
 }
 
+let statusSelfTestStarted = false;
+
+async function runStatusHqOwnerSelfTest() {
+  if (statusSelfTestStarted) return;
+  if (String(process.env.STATUS_HQ_SELFTEST_ENABLED || '') !== '1') return;
+  statusSelfTestStarted = true;
+
+  const sourceUrl = String(process.env.STATUS_HQ_SELFTEST_URL || '').trim();
+  const ownerId = String(process.env.BOT_OWNER_ID || '').trim();
+  if (!sourceUrl || !ownerId) {
+    console.error('STATUS_HQ_SELFTEST_FAILED', { code: 'SELFTEST_CONFIG_MISSING' });
+    return;
+  }
+
+  let prepared = null;
+  try {
+    console.log('STATUS_HQ_SELFTEST_START', sourceUrl);
+    const media = await parseMedia(sourceUrl);
+    const best = chooseBestVideo(media?.videos || []);
+    if (!best) {
+      const error = new Error('No video candidate resolved for Status HQ self-test.');
+      error.code = 'SELFTEST_NO_VIDEO';
+      throw error;
+    }
+
+    prepared = await prepareWhatsAppStatusHQ({
+      sourceUrl,
+      platform: 'tiktok',
+      video: best,
+    });
+
+    const sent = await sendVideoFileUpload(
+      ownerId,
+      prepared.filePath,
+      '✅ Status HQ self-test • Railway',
+    );
+
+    console.log('STATUS_HQ_SELFTEST_SENT', JSON.stringify({
+      messageId: sent?.message_id || null,
+      size: prepared.size || null,
+      tier: prepared.profile?.tier || null,
+      videoKbps: prepared.profile?.videoKbps || null,
+      attempt: prepared.attempt || null,
+    }));
+  } catch (error) {
+    console.error('STATUS_HQ_SELFTEST_FAILED', {
+      code: error?.code || null,
+      signal: error?.signal || null,
+      killed: Boolean(error?.killed),
+      message: String(error?.message || error).slice(0, 1800),
+      stderr: String(error?.stderr || '').slice(-3000),
+    });
+  } finally {
+    await prepared?.cleanup?.().catch(() => {});
+  }
+}
+
 const server = http.createServer(async (req, res) => {
   addResponseHelpers(res);
 
@@ -133,4 +193,7 @@ const server = http.createServer(async (req, res) => {
 const port = Number(process.env.PORT || 3000);
 server.listen(port, '0.0.0.0', () => {
   console.log(`Downloader bot listening on 0.0.0.0:${port}`);
+  setTimeout(() => {
+    void runStatusHqOwnerSelfTest();
+  }, 1200);
 });
