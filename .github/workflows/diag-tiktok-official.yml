@@ -1,0 +1,55 @@
+name: Diagnose TikTok official resolution
+on:
+  push:
+    branches: [diag/tiktok-official-oembed]
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Test official TikTok resolution paths
+        run: |
+          node --input-type=module <<'NODE'
+          const short='https://vt.tiktok.com/ZSqsKvFLE';
+          const uas={
+            desktop:'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36',
+            iphone:'Mozilla/5.0 (iPhone; CPU iPhone OS 18_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1',
+            android:'Mozilla/5.0 (Linux; Android 15; Pixel 9 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Mobile Safari/537.36'
+          };
+          for (const [name,ua] of Object.entries(uas)) {
+            try {
+              const r=await fetch(short,{redirect:'manual',headers:{'user-agent':ua,accept:'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8','accept-language':'en-US,en;q=0.9'}});
+              console.log('SHORT',name,'status',r.status,'location',r.headers.get('location'),'set-cookie',Boolean(r.headers.get('set-cookie')));
+            } catch(e){console.log('SHORT_ERR',name,e.message)}
+          }
+          try {
+            const home=await fetch('https://www.tiktok.com/',{redirect:'manual',headers:{'user-agent':uas.desktop,accept:'text/html'}});
+            const cookie=home.headers.get('set-cookie')||'';
+            const cookieHeader=cookie.split(',').map(x=>x.split(';')[0]).join('; ');
+            const r=await fetch(short,{redirect:'manual',headers:{'user-agent':uas.desktop,accept:'text/html',cookie:cookieHeader,referer:'https://www.tiktok.com/'}});
+            console.log('COOKIE_SHORT','home',home.status,'cookieLen',cookieHeader.length,'status',r.status,'location',r.headers.get('location'));
+          } catch(e){console.log('COOKIE_ERR',e.message)}
+          for (const base of ['https://www.tiktok.com/oembed?url=','https://www.tiktok.com/oembed?url=']) {
+            try {
+              const u=base+encodeURIComponent(short);
+              const r=await fetch(u,{headers:{'user-agent':uas.desktop,accept:'application/json'}});
+              const t=await r.text();
+              console.log('OEMBED',r.status,'final',r.url,'body',t.slice(0,5000));
+            } catch(e){console.log('OEMBED_ERR',e.message)}
+            break;
+          }
+          // Try common public embed/share endpoints with the short URL as a query.
+          const extra=[
+            'https://www.tiktok.com/embed?url='+encodeURIComponent(short),
+            'https://www.tiktok.com/embed/v2?url='+encodeURIComponent(short),
+            'https://www.tiktok.com/player/v1?url='+encodeURIComponent(short),
+            'https://www.tiktok.com/share/video?url='+encodeURIComponent(short)
+          ];
+          for(const u of extra){
+            try{const r=await fetch(u,{redirect:'follow',headers:{'user-agent':uas.desktop,accept:'text/html,application/json'}});const t=await r.text();console.log('EXTRA',u,'status',r.status,'final',r.url,'body',t.slice(0,1200).replace(/\s+/g,' '));}catch(e){console.log('EXTRA_ERR',u,e.message)}
+          }
+          NODE
+      - run: echo official-diagnostic-finished
