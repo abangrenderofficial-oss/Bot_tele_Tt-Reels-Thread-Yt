@@ -1,0 +1,66 @@
+name: Heavy Status HQ 250MB
+
+on:
+  workflow_dispatch:
+    inputs:
+      chat_id:
+        description: Telegram chat ID
+        required: true
+        type: string
+      message_id:
+        description: Telegram preview message ID containing the source video
+        required: true
+        type: string
+      file_size:
+        description: Declared source size in bytes
+        required: false
+        default: '0'
+        type: string
+      progress_message_id:
+        description: Bot progress message ID to edit/remove
+        required: false
+        default: '0'
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: heavy-status-${{ inputs.chat_id }}
+  cancel-in-progress: false
+
+jobs:
+  status-hq:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Ensure FFmpeg
+        shell: bash
+        run: |
+          if ! command -v ffmpeg >/dev/null 2>&1 || ! command -v ffprobe >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo apt-get install -y ffmpeg
+          fi
+          ffmpeg -version | head -n 1
+
+      - name: Install MTProto client
+        run: python -m pip install --disable-pip-version-check --quiet telethon cryptg
+
+      - name: Process and return Status HQ video
+        env:
+          TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
+          TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          HEAVY_CHAT_ID: ${{ inputs.chat_id }}
+          HEAVY_MESSAGE_ID: ${{ inputs.message_id }}
+          HEAVY_FILE_SIZE: ${{ inputs.file_size }}
+          HEAVY_PROGRESS_MESSAGE_ID: ${{ inputs.progress_message_id }}
+        run: python scripts/heavy_status_worker.py
