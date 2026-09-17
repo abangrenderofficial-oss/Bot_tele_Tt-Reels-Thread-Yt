@@ -53,6 +53,33 @@ func contentIdentifierMetadata(_ identifier: String) -> AVMetadataItem {
     return item
 }
 
+func autoLivePhotoMetadata() -> AVMetadataItem {
+    let item = AVMutableMetadataItem()
+    item.key = "com.apple.quicktime.live-photo.auto" as NSString
+    item.keySpace = AVMetadataKeySpace(rawValue: "mdta")
+    item.value = NSNumber(value: UInt8(1))
+    item.dataType = "com.apple.metadata.datatype.int8"
+    return item
+}
+
+func livePhotoVitalityScoreMetadata() -> AVMetadataItem {
+    let item = AVMutableMetadataItem()
+    item.key = "com.apple.quicktime.live-photo.vitality-score" as NSString
+    item.keySpace = AVMetadataKeySpace(rawValue: "mdta")
+    item.value = NSNumber(value: Float(1.0))
+    item.dataType = "com.apple.metadata.datatype.float32"
+    return item
+}
+
+func livePhotoVitalityScoringVersionMetadata() -> AVMetadataItem {
+    let item = AVMutableMetadataItem()
+    item.key = "com.apple.quicktime.live-photo.vitality-scoring-version" as NSString
+    item.keySpace = AVMetadataKeySpace(rawValue: "mdta")
+    item.value = NSNumber(value: Int64(0))
+    item.dataType = "com.apple.metadata.datatype.int64"
+    return item
+}
+
 func stillImageTimeItem() -> AVMetadataItem {
     let item = AVMutableMetadataItem()
     item.key = "com.apple.quicktime.still-image-time" as NSString
@@ -141,7 +168,16 @@ func pairMovie(inputURL: URL, outputURL: URL, identifier: String) throws {
     )
     metadataInput.addTrackAssociation(withTrackOf: videoInput, type: metadataReferent)
 
-    writer.metadata = [contentIdentifierMetadata(identifier)]
+    // Keep the shared Live Photo identifier, and add the movie-level vitality
+    // metadata Apple exposes for Live Photo assets. We deliberately use a high
+    // vitality score for this generated motion experiment so iOS does not treat
+    // the clip as a low-dynamism Auto Live Photo.
+    writer.metadata = [
+        contentIdentifierMetadata(identifier),
+        autoLivePhotoMetadata(),
+        livePhotoVitalityScoreMetadata(),
+        livePhotoVitalityScoringVersionMetadata(),
+    ]
 
     try require(writer.startWriting(), "AVAssetWriter could not start: \(writer.error?.localizedDescription ?? "unknown error")")
     writer.startSession(atSourceTime: .zero)
@@ -207,6 +243,16 @@ func movieIdentifier(_ asset: AVAsset) -> String? {
     return nil
 }
 
+func movieNumberMetadata(_ asset: AVAsset, key: String) -> NSNumber? {
+    for item in asset.metadata(forFormat: .quickTimeMetadata) {
+        if item.key as? String == key,
+           item.keySpace?.rawValue == "mdta" {
+            return item.numberValue
+        }
+    }
+    return nil
+}
+
 func stillImageMetadataInfo(_ asset: AVAsset) -> (found: Bool, payload: Int, time: Double, duration: Double) {
     guard let metadataTrack = asset.tracks(withMediaType: .metadata).first,
           let reader = try? AVAssetReader(asset: asset) else {
@@ -250,6 +296,13 @@ func verifyPair(photoURL: URL, movieURL: URL, expectedIdentifier: String) throws
     let asset = AVURLAsset(url: movieURL)
     try require(movieIdentifier(asset) == expectedIdentifier, "Paired MOV content identifier verification failed.")
 
+    let autoLive = movieNumberMetadata(asset, key: "com.apple.quicktime.live-photo.auto")
+    let vitalityScore = movieNumberMetadata(asset, key: "com.apple.quicktime.live-photo.vitality-score")
+    let vitalityVersion = movieNumberMetadata(asset, key: "com.apple.quicktime.live-photo.vitality-scoring-version")
+    try require(autoLive?.intValue == 1, "Paired MOV Live Photo auto metadata verification failed.")
+    try require((vitalityScore?.doubleValue ?? -1) >= 0.5, "Paired MOV Live Photo vitality score verification failed.")
+    try require(vitalityVersion != nil, "Paired MOV Live Photo vitality scoring version verification failed.")
+
     let still = stillImageMetadataInfo(asset)
     try require(still.found, "Paired MOV still-image-time metadata verification failed.")
     try require(still.payload == -1, "Paired MOV still-image-time payload is not Apple-style -1.")
@@ -258,10 +311,13 @@ func verifyPair(photoURL: URL, movieURL: URL, expectedIdentifier: String) throws
 
     print(
         String(
-            format: "APPLE_LIVE_PHOTO_STRUCTURE still=%.4fs metadata_sample=%.6fs referent=video payload=%d",
+            format: "APPLE_LIVE_PHOTO_STRUCTURE still=%.4fs metadata_sample=%.6fs referent=video payload=%d auto=%d vitality=%.3f vitality_version=%lld",
             still.time,
             still.duration,
-            still.payload
+            still.payload,
+            autoLive?.intValue ?? -1,
+            vitalityScore?.doubleValue ?? -1,
+            vitalityVersion?.int64Value ?? -1
         )
     )
 }
