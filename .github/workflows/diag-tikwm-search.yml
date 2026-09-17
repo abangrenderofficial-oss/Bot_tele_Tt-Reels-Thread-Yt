@@ -32,3 +32,4 @@ jobs:
             }
           }
           NODE
+      - run: echo diagnostic-trigger-v2
