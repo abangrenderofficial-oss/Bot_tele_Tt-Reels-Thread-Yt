@@ -13,3 +13,4 @@ jobs:
       - run: npm install --no-audit --no-fund
       - run: npm run check
       - run: grep -q "TikWM retry matrix" src/downloader.js
+      - run: echo retry-matrix-validation
