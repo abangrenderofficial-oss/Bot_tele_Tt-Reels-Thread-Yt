@@ -4,6 +4,8 @@ import { parseTwitterVideo } from '../src/twitter.js';
 import { prepareSocialVideoTelegramUpload } from '../src/social-video.js';
 import { prepareYouTubeTelegramUpload } from '../src/youtube-upload.js';
 import { prepareWhatsAppStatusHQ } from '../src/status-hq.js';
+import { prepareIPhoneLiveWallpaper } from '../src/live-wallpaper.js';
+import { sendLivePhotoFileUpload } from '../src/live-photo-telegram.js';
 import {
   prepareTikTokSlideshowVideo,
   prepareTikTokSound,
@@ -30,6 +32,7 @@ const TELEGRAM_CLOUD_UPLOAD_MAX = 50 * 1024 * 1024;
 const TT_SLIDE_SPLIT = 'ttslide:split:v2';
 const TT_SLIDE_VIDEO = 'ttslide:video:v2';
 const MEDIA_STATUS_HQ = 'media:status:v2';
+const MEDIA_LIVE_WALLPAPER = 'media:live:v1';
 const AUDIT_DELETE = 'audit:delete:v1';
 
 // OWNER LOCK: Keep this /start and /help copy unchanged unless the owner explicitly requests an edit.
@@ -76,32 +79,28 @@ function safeTitle(media, platform) {
   return title ? `${platformLabel(platform)} • ${title}`.slice(0, 760) : `${platformLabel(platform)} download`;
 }
 
-function sourceCaption(title, url, quality = '') {
-  const suffix = [quality ? `🎬 ${quality}` : '', url ? `🔗 ${url}` : ''].filter(Boolean).join('\n');
-  const budget = Math.max(80, 1020 - suffix.length);
-  const head = String(title || 'Video').slice(0, budget);
-  return suffix ? `${head}\n${suffix}`.slice(0, 1024) : head.slice(0, 1024);
-}
-
-function statusCallbackData(sourceUrl = '') {
+function callbackData(prefix, sourceUrl = '') {
   const raw = String(sourceUrl || '').trim();
-  if (!raw) return MEDIA_STATUS_HQ;
+  if (!raw) return prefix;
 
   try {
     const compact = new URL(raw);
     compact.search = '';
     compact.hash = '';
-    const data = `${MEDIA_STATUS_HQ}|${compact.toString()}`;
+    const data = `${prefix}|${compact.toString()}`;
     if (Buffer.byteLength(data, 'utf8') <= 64) return data;
   } catch {}
 
-  return MEDIA_STATUS_HQ;
+  return prefix;
 }
 
-function statusButton(sourceUrl = '') {
+function mediaActionButtons(sourceUrl = '') {
   return {
     reply_markup: {
-      inline_keyboard: [[{ text: '📱 Status HQ', callback_data: statusCallbackData(sourceUrl) }]],
+      inline_keyboard: [
+        [{ text: '📱 Status HQ', callback_data: callbackData(MEDIA_STATUS_HQ, sourceUrl) }],
+        [{ text: '🍎 Live Wallpaper iPhone', callback_data: callbackData(MEDIA_LIVE_WALLPAPER, sourceUrl) }],
+      ],
     },
   };
 }
@@ -122,8 +121,15 @@ function statusProgressText(percent) {
   return `🔋 Status HQ sedang diproses...\n${bar} ${value}%`;
 }
 
-async function startStatusProgress(chatId) {
-  const progressMessage = await sendMessage(chatId, statusProgressText(1)).catch(() => null);
+function liveProgressText(percent) {
+  const value = Math.max(1, Math.min(100, Math.round(Number(percent) || 1)));
+  const filled = value >= 100 ? 10 : Math.min(9, Math.floor(value / 10));
+  const bar = `${'▰'.repeat(filled)}${'▱'.repeat(10 - filled)}`;
+  return `🍎 Live Wallpaper sedang diproses...\n${bar} ${value}%`;
+}
+
+async function startProgress(chatId, textBuilder) {
+  const progressMessage = await sendMessage(chatId, textBuilder(1)).catch(() => null);
   const messageId = progressMessage?.message_id;
   if (!messageId) {
     return {
@@ -138,7 +144,7 @@ async function startStatusProgress(chatId) {
 
   const queueEdit = (nextPercent) => {
     percent = Math.max(percent, Math.min(99, nextPercent));
-    const text = statusProgressText(percent);
+    const text = textBuilder(percent);
     editChain = editChain
       .then(() => telegram('editMessageText', {
         chat_id: chatId,
@@ -166,7 +172,7 @@ async function startStatusProgress(chatId) {
       await telegram('editMessageText', {
         chat_id: chatId,
         message_id: messageId,
-        text: statusProgressText(100),
+        text: textBuilder(100),
       }).catch(() => {});
     },
     async remove() {
@@ -179,6 +185,14 @@ async function startStatusProgress(chatId) {
       }).catch(() => {});
     },
   };
+}
+
+function startStatusProgress(chatId) {
+  return startProgress(chatId, statusProgressText);
+}
+
+function startLiveProgress(chatId) {
+  return startProgress(chatId, liveProgressText);
 }
 
 function relayItem(baseUrl, item) {
@@ -213,12 +227,6 @@ function orderedVideoCandidates(videos = []) {
   const likelySendable = ordered.filter((item) => !item.filesize || Number(item.filesize) <= limit);
   const knownTooLarge = ordered.filter((item) => item.filesize && Number(item.filesize) > limit);
   return [...likelySendable, ...knownTooLarge];
-}
-
-function userLabel(from = {}) {
-  if (from.username) return `@${from.username}`;
-  const name = [from.first_name, from.last_name].filter(Boolean).join(' ').trim();
-  return name || (from.id ? `Telegram ID ${from.id}` : 'Unknown user');
 }
 
 function userFullName(from = {}) {
@@ -436,7 +444,7 @@ async function deliverCompressedSocial(chatId, video, title, durationHint, sourc
     prepared = await prepareSocialVideoTelegramUpload(video, configuredUploadLimit(), {
       duration: Number(video?.duration || durationHint || 0) || null,
     });
-    return await sendVideoFileUpload(chatId, prepared.filePath, '', statusButton(sourceUrl));
+    return await sendVideoFileUpload(chatId, prepared.filePath, '', mediaActionButtons(sourceUrl));
   } catch (error) {
     console.warn('Social HQ compression/upload failed:', error?.code, error?.message);
     return null;
@@ -458,7 +466,7 @@ async function deliverVideo(chatId, video, title, baseUrl, options = {}) {
     const fetchUrl = customHeaders ? relay?.url : video.url;
     if (fetchUrl) {
       try {
-        return await sendVideoUrl(chatId, fetchUrl, '', statusButton(options.sourceUrl));
+        return await sendVideoUrl(chatId, fetchUrl, '', mediaActionButtons(options.sourceUrl));
       } catch (error) {
         console.warn('Telegram URL fetch failed, trying server upload:', error?.message);
       }
@@ -474,7 +482,7 @@ async function deliverVideo(chatId, video, title, baseUrl, options = {}) {
   }
 
   try {
-    return await sendVideoUpload(chatId, video, '', statusButton(options.sourceUrl));
+    return await sendVideoUpload(chatId, video, '', mediaActionButtons(options.sourceUrl));
   } catch (error) {
     console.warn('Telegram server upload failed:', error?.code, error?.message);
     if (allowSocialCompression) {
@@ -488,7 +496,7 @@ async function deliverPreferredYouTube(chatId, url, title) {
   let prepared = null;
   try {
     prepared = await prepareYouTubeTelegramUpload(url, configuredUploadLimit());
-    return await sendVideoFileUpload(chatId, prepared.filePath, '', statusButton(url));
+    return await sendVideoFileUpload(chatId, prepared.filePath, '', mediaActionButtons(url));
   } catch (error) {
     console.warn('Preferred YouTube pipeline failed:', error?.code, error?.message);
     return null;
@@ -535,7 +543,7 @@ async function disableChoiceButtons(callbackQuery) {
   }).catch(() => {});
 }
 
-async function claimStatusButton(callbackQuery) {
+async function claimMediaButtons(callbackQuery) {
   const chatId = callbackQuery?.message?.chat?.id;
   const messageId = callbackQuery?.message?.message_id;
   if (!chatId || !messageId) return false;
@@ -548,7 +556,7 @@ async function claimStatusButton(callbackQuery) {
     });
     return true;
   } catch (error) {
-    console.warn('Status HQ button already used or could not be claimed:', error?.code, error?.message);
+    console.warn('Media action buttons already used or could not be claimed:', error?.code, error?.message);
     return false;
   }
 }
@@ -619,7 +627,7 @@ async function processTikTokVideo(callbackQuery, mirrorGroupId = '') {
       chatId,
       preparedVideo.filePath,
       '',
-      statusButton(sourceUrl),
+      mediaActionButtons(sourceUrl),
     );
     await mirrorVideoToGroup(chatId, sent, mirrorGroupId, callbackQuery.from, {
       sourceUrl,
@@ -694,6 +702,13 @@ async function processStatusFromLink(chatId, url, platform) {
   }
 }
 
+function callbackSourceUrl(action, prefix, caption = '') {
+  const embedded = action.startsWith(`${prefix}|`)
+    ? action.slice(prefix.length + 1)
+    : '';
+  return extractFirstUrl(caption) || extractFirstUrl(embedded);
+}
+
 async function processStatusButton(callbackQuery) {
   const action = String(callbackQuery?.data || '');
   if (!action.startsWith(MEDIA_STATUS_HQ)) return false;
@@ -701,18 +716,15 @@ async function processStatusButton(callbackQuery) {
   const chatId = callbackQuery?.message?.chat?.id;
   const fileId = callbackQuery?.message?.video?.file_id;
   const caption = callbackQuery?.message?.caption || '';
-  const embeddedSourceUrl = action.startsWith(`${MEDIA_STATUS_HQ}|`)
-    ? action.slice(MEDIA_STATUS_HQ.length + 1)
-    : '';
-  const sourceUrl = extractFirstUrl(caption) || extractFirstUrl(embeddedSourceUrl);
+  const sourceUrl = callbackSourceUrl(action, MEDIA_STATUS_HQ, caption);
   const sourcePlatform = sourceUrl ? detectPlatform(sourceUrl) : null;
   if (!chatId) return true;
 
-  const claimed = await claimStatusButton(callbackQuery);
+  const claimed = await claimMediaButtons(callbackQuery);
   if (!claimed) {
     await telegram('answerCallbackQuery', {
       callback_query_id: callbackQuery.id,
-      text: 'Status HQ untuk video ini dah digunakan. Hantar link semula untuk buat lagi.',
+      text: 'Pilihan untuk video ini dah digunakan. Hantar video/link semula untuk buat lagi.',
       show_alert: false,
     }).catch(() => {});
     return true;
@@ -752,7 +764,81 @@ async function processStatusButton(callbackQuery) {
   } catch (error) {
     console.error('Status HQ button failed:', error?.code, error?.message);
     await progress.remove();
-    await sendMessage(chatId, '❌ Status HQ tak dapat disiapkan untuk video ini. Cuba hantar semula link dan tekan Status HQ sekali lagi.').catch(() => {});
+    await sendMessage(chatId, '❌ Status HQ tak dapat disiapkan untuk video ini. Cuba hantar semula video/link dan tekan Status HQ sekali lagi.').catch(() => {});
+  } finally {
+    if (prepared?.cleanup) await prepared.cleanup().catch(() => {});
+  }
+  return true;
+}
+
+async function prepareLiveFromSourceUrl(url, platform, baseUrl) {
+  const media = await resolveStatusMedia(platform, url);
+  const best = chooseBestVideo(media.videos || []);
+  if (!best) {
+    const err = new Error('No suitable source video for Live Wallpaper.');
+    err.code = 'LIVE_SOURCE_NOT_FOUND';
+    throw err;
+  }
+
+  const source = needsCustomHeaders(best)
+    ? (relayItem(baseUrl, best) || best)
+    : best;
+  return prepareIPhoneLiveWallpaper({ video: source });
+}
+
+async function processLiveWallpaperButton(callbackQuery, baseUrl) {
+  const action = String(callbackQuery?.data || '');
+  if (!action.startsWith(MEDIA_LIVE_WALLPAPER)) return false;
+
+  const chatId = callbackQuery?.message?.chat?.id;
+  const fileId = callbackQuery?.message?.video?.file_id;
+  const caption = callbackQuery?.message?.caption || '';
+  const sourceUrl = callbackSourceUrl(action, MEDIA_LIVE_WALLPAPER, caption);
+  const sourcePlatform = sourceUrl ? detectPlatform(sourceUrl) : null;
+  if (!chatId) return true;
+
+  const claimed = await claimMediaButtons(callbackQuery);
+  if (!claimed) {
+    await telegram('answerCallbackQuery', {
+      callback_query_id: callbackQuery.id,
+      text: 'Pilihan untuk video ini dah digunakan. Hantar video/link semula untuk buat lagi.',
+      show_alert: false,
+    }).catch(() => {});
+    return true;
+  }
+
+  await telegram('answerCallbackQuery', {
+    callback_query_id: callbackQuery.id,
+    text: 'Live Wallpaper iPhone sedang disediakan…',
+  }).catch(() => {});
+  await sendChatAction(chatId, 'upload_video').catch(() => {});
+
+  let prepared = null;
+  const progress = await startLiveProgress(chatId);
+  try {
+    if (!fileId) throw new Error('Video file_id missing from callback message.');
+
+    try {
+      const telegramVideo = await getTelegramFileSource(fileId);
+      prepared = await prepareIPhoneLiveWallpaper({ video: telegramVideo });
+    } catch (telegramFileError) {
+      console.warn('Live Wallpaper Telegram-file path failed, trying source URL:', telegramFileError?.code, telegramFileError?.message);
+      if (!sourceUrl || !sourcePlatform) throw telegramFileError;
+      prepared = await prepareLiveFromSourceUrl(sourceUrl, sourcePlatform, baseUrl);
+    }
+
+    await progress.complete();
+    await sendLivePhotoFileUpload(
+      chatId,
+      prepared.videoPath,
+      prepared.photoPath,
+      'Live Wallpaper iPhone dah siap 🍎',
+    );
+    await progress.remove();
+  } catch (error) {
+    console.error('Live Wallpaper button failed:', error?.code, error?.message);
+    await progress.remove();
+    await sendMessage(chatId, '❌ Live Wallpaper iPhone tak dapat disiapkan untuk video ini. Cuba hantar semula video/link dan cuba lagi.').catch(() => {});
   } finally {
     if (prepared?.cleanup) await prepared.cleanup().catch(() => {});
   }
@@ -853,6 +939,43 @@ async function processStandardDownload(chatId, url, platform, baseUrl, mirrorGro
   }
 }
 
+function formatFileSize(bytes) {
+  const value = Number(bytes || 0);
+  if (!value) return '-';
+  if (value >= 1024 * 1024) return `${(value / 1024 / 1024).toFixed(1)} MB`;
+  return `${Math.max(1, Math.round(value / 1024))} KB`;
+}
+
+function uploadedVideoCaption(video = {}) {
+  const width = Number(video.width || 0);
+  const height = Number(video.height || 0);
+  const duration = Number(video.duration || 0);
+  return [
+    '🎬 Video diterima',
+    width && height ? `📐 ${width} × ${height}` : null,
+    duration ? `⏱️ ${duration}s` : null,
+    video.file_size ? `📦 ${formatFileSize(video.file_size)}` : null,
+    '',
+    'Pilih fungsi:',
+  ].filter((line) => line !== null).join('\n').slice(0, 1024);
+}
+
+async function processUploadedVideo(message) {
+  const chatId = message?.chat?.id;
+  const video = message?.video;
+  if (!chatId || !video?.file_id) return false;
+
+  await sendChatAction(chatId, 'upload_video').catch(() => {});
+  await telegram('sendVideo', {
+    chat_id: chatId,
+    video: video.file_id,
+    caption: uploadedVideoCaption(video),
+    supports_streaming: true,
+    ...mediaActionButtons(),
+  });
+  return true;
+}
+
 async function processMessage(message, context) {
   const chatId = message?.chat?.id;
   const text = message?.text || message?.caption || '';
@@ -874,6 +997,11 @@ async function processMessage(message, context) {
     return;
   }
 
+  if (message?.video?.file_id) {
+    await processUploadedVideo(message);
+    return;
+  }
+
   const statusMode = command === '/status' || command === 'status';
   const url = extractFirstUrl(text);
   if (!url) {
@@ -881,7 +1009,7 @@ async function processMessage(message, context) {
       chatId,
       statusMode
         ? 'Guna format: /status <link video>'
-        : 'Hantar satu link TikTok, Instagram, Threads, X/Twitter atau YouTube.',
+        : 'Hantar satu link TikTok, Instagram, Threads, X/Twitter atau YouTube, atau upload video dari gallery.',
     );
     return;
   }
@@ -932,6 +1060,9 @@ export default async function handler(req, res) {
         return json(res, 200, { ok: true });
       }
       if (await processStatusButton(callbackQuery)) {
+        return json(res, 200, { ok: true });
+      }
+      if (await processLiveWallpaperButton(callbackQuery, context.baseUrl)) {
         return json(res, 200, { ok: true });
       }
       await processTikTokSlideshowChoice(callbackQuery, context.baseUrl, context.mirrorGroupId);
