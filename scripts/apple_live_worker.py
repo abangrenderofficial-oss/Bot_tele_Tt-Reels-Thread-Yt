@@ -1,7 +1,6 @@
 import json
 import math
 import os
-import re
 import subprocess
 import tempfile
 from pathlib import Path
@@ -23,15 +22,12 @@ MAX_INPUT_BYTES = MAX_INPUT_MB * MB
 BOT_API_BASE = os.environ.get('TELEGRAM_API_BASE_URL', 'https://api.telegram.org').rstrip('/')
 
 # This worker is intentionally isolated from Status HQ and the normal downloader.
-# It targets iOS Lock Screen compatibility rather than Telegram's generic 10-second
-# Live Photo allowance. Keep the motion short and predictable.
-WALLPAPER_DURATION = max(1.0, min(2.0, float(os.environ.get('APPLE_WALLPAPER_DURATION', '1.5') or 1.5)))
-SCENE_ANALYZE_SECONDS = max(
-    WALLPAPER_DURATION,
-    min(10.0, float(os.environ.get('APPLE_WALLPAPER_ANALYZE_SECONDS', '6') or 6)),
-)
-SCENE_THRESHOLD = max(0.15, min(0.80, float(os.environ.get('APPLE_WALLPAPER_SCENE_THRESHOLD', '0.35') or 0.35)))
+# For the current iPhone Live Wallpaper experiment we keep the source video's
+# original duration instead of forcing the old 1.5-second wallpaper profile.
 MIN_WALLPAPER_SOURCE_SECONDS = 1.0
+TARGET_MOTION_BYTES = 6.5 * MB
+MAX_RAW_MOTION_BYTES = 9 * MB
+MAX_PAIRED_MOTION_BYTES = 10 * MB
 
 
 def require_config():
@@ -125,7 +121,13 @@ def fail_progress(message):
 
 def run(cmd, timeout=900):
     print('$ ' + ' '.join(str(x) for x in cmd), flush=True)
-    result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=timeout)
+    result = subprocess.run(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        timeout=timeout,
+    )
     if result.stdout:
         print(result.stdout[-4000:], flush=True)
     if result.returncode != 0:
@@ -174,75 +176,6 @@ def target_dimensions(width, height):
     return even_floor(width * scale), even_floor(height * scale), False
 
 
-def detect_scene_cuts(source, probe):
-    scan_seconds = min(probe['duration'], SCENE_ANALYZE_SECONDS)
-    if scan_seconds <= WALLPAPER_DURATION + 0.15:
-        return []
-
-    filter_value = f'select=gt(scene\\,{SCENE_THRESHOLD:.3f}),showinfo'
-    cmd = [
-        'ffmpeg', '-hide_banner', '-loglevel', 'info',
-        '-t', f'{scan_seconds:.3f}', '-i', str(source),
-        '-an', '-vf', filter_value, '-f', 'null', '-',
-    ]
-    print('$ ' + ' '.join(str(x) for x in cmd), flush=True)
-    try:
-        result = subprocess.run(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            timeout=120,
-        )
-    except Exception as exc:
-        print(f'scene scan skipped: {exc}', flush=True)
-        return []
-
-    if result.returncode != 0:
-        print(f'scene scan returned {result.returncode}; using fallback clip window', flush=True)
-        return []
-
-    values = []
-    for match in re.finditer(r'pts_time:([0-9]+(?:\.[0-9]+)?)', result.stderr or ''):
-        value = float(match.group(1))
-        if 0.05 < value < scan_seconds - 0.05:
-            values.append(value)
-    return sorted(set(values))
-
-
-def choose_motion_window(source, probe):
-    duration = min(WALLPAPER_DURATION, probe['duration'])
-    max_start = max(0.0, probe['duration'] - duration)
-    if max_start <= 0.001:
-        return 0.0, duration
-
-    scan_end = min(probe['duration'], SCENE_ANALYZE_SECONDS)
-    cuts = detect_scene_cuts(source, probe)
-    boundaries = [0.0] + [cut for cut in cuts if cut < scan_end] + [scan_end]
-    margin = 0.08
-
-    for left, right in zip(boundaries, boundaries[1:]):
-        safe_left = left + (margin if left > 0 else min(0.12, margin))
-        safe_right = right - margin
-        if safe_right - safe_left >= duration:
-            start = min(max_start, max(0.0, safe_left))
-            print(
-                f'wallpaper clip selected start={start:.3f}s duration={duration:.3f}s '
-                f'cuts={cuts[:12]}',
-                flush=True,
-            )
-            return start, duration
-
-    # Fallback: avoid a potentially blank/fade first frame while staying near the
-    # beginning so the result still resembles what the user selected.
-    start = min(max_start, 0.12)
-    print(
-        f'wallpaper clip fallback start={start:.3f}s duration={duration:.3f}s cuts={cuts[:12]}',
-        flush=True,
-    )
-    return start, duration
-
-
 def wallpaper_filter(probe):
     width, height, needs_portrait_crop = target_dimensions(probe['width'], probe['height'])
     if needs_portrait_crop:
@@ -254,20 +187,25 @@ def wallpaper_filter(probe):
 
 
 def encode_motion_and_cover(source, raw_movie, raw_cover, probe):
-    clip_start, duration = choose_motion_window(source, probe)
-    target_bytes = 6.5 * MB
-    total_kbps = int((target_bytes * 8 / duration / 1000) * 0.85)
-    video_kbps = max(1800, min(6500, total_kbps - 120))
-    maxrate = max(video_kbps, int(video_kbps * 1.10))
-    bufsize = max(3000, maxrate * 2)
+    # Preserve the source timeline end-to-end. No 1.5-second trim and no scene
+    # selection: this lets us test the new Apple track-association structure
+    # independently from duration heuristics.
+    clip_start = 0.0
+    duration = probe['duration']
 
-    # Deliberately video-only. Apple Live Wallpaper does not need audio, and
-    # keeping this stream simple makes the native AVFoundation pairing safer.
+    # Adapt bitrate to the original duration so the paired motion still has a
+    # chance to fit Telegram's Live Photo payload size limit. Short clips can use
+    # up to 6.5 Mbps; longer clips progressively use a lower bitrate.
+    total_kbps = int((TARGET_MOTION_BYTES * 8 / duration / 1000) * 0.90)
+    video_kbps = max(350, min(6500, total_kbps))
+    maxrate = max(video_kbps, int(video_kbps * 1.10))
+    bufsize = max(1000, maxrate * 2)
+
     run(
         [
             'ffmpeg', '-y', '-hide_banner', '-loglevel', 'error',
-            '-ss', f'{clip_start:.3f}', '-i', str(source),
-            '-t', f'{duration:.3f}', '-map', '0:v:0', '-an',
+            '-i', str(source),
+            '-t', f'{duration:.6f}', '-map', '0:v:0', '-an',
             '-vf', wallpaper_filter(probe),
             '-c:v', 'libx264', '-preset', 'medium', '-pix_fmt', 'yuv420p',
             '-profile:v', 'high', '-level:v', '4.0',
@@ -276,18 +214,21 @@ def encode_motion_and_cover(source, raw_movie, raw_cover, probe):
             '-movflags', '+faststart', '-map_metadata', '-1',
             '-video_track_timescale', '60000', '-f', 'mov', str(raw_movie),
         ],
-        timeout=600,
+        timeout=900,
     )
     if not raw_movie.exists() or raw_movie.stat().st_size <= 0:
         raise RuntimeError('Live Wallpaper motion file tidak terhasil.')
-    if raw_movie.stat().st_size > 9 * MB:
-        raise RuntimeError(f'Live Wallpaper motion terlalu besar: {raw_movie.stat().st_size / MB:.2f}MB.')
+    if raw_movie.stat().st_size > MAX_RAW_MOTION_BYTES:
+        raise RuntimeError(
+            f'Live Wallpaper motion terlalu besar selepas kekalkan duration asal: '
+            f'{raw_movie.stat().st_size / MB:.2f}MB.'
+        )
 
     still_at = max(0.0, duration * 0.5)
     run(
         [
             'ffmpeg', '-y', '-hide_banner', '-loglevel', 'error',
-            '-ss', f'{still_at:.3f}', '-i', str(raw_movie),
+            '-ss', f'{still_at:.6f}', '-i', str(raw_movie),
             '-frames:v', '1', '-q:v', '2', str(raw_cover),
         ],
         timeout=120,
@@ -295,7 +236,13 @@ def encode_motion_and_cover(source, raw_movie, raw_cover, probe):
     if not raw_cover.exists() or raw_cover.stat().st_size <= 0:
         raise RuntimeError('Live Wallpaper cover tidak terhasil.')
 
-    return {'clip_start': clip_start, 'duration': duration}
+    return {
+        'clip_start': clip_start,
+        'duration': duration,
+        'source_duration': probe['duration'],
+        'duration_mode': 'original',
+        'video_kbps': video_kbps,
+    }
 
 
 def pair_apple_live_photo(raw_cover, raw_movie, paired_cover, paired_movie):
@@ -308,8 +255,11 @@ def pair_apple_live_photo(raw_cover, raw_movie, paired_cover, paired_movie):
     )
     if not paired_cover.exists() or not paired_movie.exists():
         raise RuntimeError('Native Apple Live Photo pairing tidak menghasilkan fail lengkap.')
-    if paired_movie.stat().st_size > 10 * MB:
-        raise RuntimeError(f'Paired Apple Live Photo MOV melebihi 10MB: {paired_movie.stat().st_size / MB:.2f}MB.')
+    if paired_movie.stat().st_size > MAX_PAIRED_MOTION_BYTES:
+        raise RuntimeError(
+            f'Paired Apple Live Photo MOV melebihi 10MB: '
+            f'{paired_movie.stat().st_size / MB:.2f}MB.'
+        )
 
 
 def send_live_photo(movie_path, photo_path):
@@ -330,7 +280,13 @@ def send_live_photo(movie_path, photo_path):
 
 def download_source(path):
     set_progress(5)
-    app = Client('apple_live_worker', api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN, in_memory=True)
+    app = Client(
+        'apple_live_worker',
+        api_id=API_ID,
+        api_hash=API_HASH,
+        bot_token=BOT_TOKEN,
+        in_memory=True,
+    )
     with app:
         downloaded = app.download_media(VIDEO_FILE_ID, file_name=str(path))
         if not downloaded and SOURCE_MESSAGE_ID:
@@ -351,10 +307,10 @@ def download_source(path):
 def main():
     require_config()
     print(
-        f'apple live worker input={FILE_SIZE} chat={CHAT_ID} '
-        f'wallpaper_duration={WALLPAPER_DURATION:.3f}s scene_threshold={SCENE_THRESHOLD:.3f}',
+        f'apple live worker input={FILE_SIZE} chat={CHAT_ID} duration_mode=original',
         flush=True,
     )
+
     with tempfile.TemporaryDirectory(prefix='abangrender-apple-live-') as temp_dir:
         temp = Path(temp_dir)
         source = temp / 'source-video.bin'
@@ -370,12 +326,15 @@ def main():
         set_progress(42)
         clip = encode_motion_and_cover(source, raw_movie, raw_cover, probe)
         print(f'wallpaper_profile={clip}', flush=True)
+
         set_progress(68)
         pair_apple_live_photo(raw_cover, raw_movie, paired_cover, paired_movie)
         print(
-            f'paired sizes movie={paired_movie.stat().st_size} photo={paired_cover.stat().st_size}',
+            f'paired sizes movie={paired_movie.stat().st_size} '
+            f'photo={paired_cover.stat().st_size}',
             flush=True,
         )
+
         set_progress(88)
         send_live_photo(paired_movie, paired_cover)
         set_progress(100)
