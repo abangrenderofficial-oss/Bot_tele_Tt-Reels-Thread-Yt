@@ -23,7 +23,7 @@ jobs:
 
           const api = await readFile('api/telegram.js', 'utf8');
           const start = api.indexOf('async function processLiveWallpaperButton(callbackQuery, baseUrl) {');
-          const end = api.indexOf("async function processStandardDownload(chatId, url, platform, baseUrl, mirrorGroupId = '', from = {}, sourceMessage = null) {", start);
+          const end = api.indexOf("async function processStandardDownload(chatId, url, platform, baseUrl, mirrorGroupId = '', from = {}, sourceMessage = null, jobFence = null) {", start);
           if (start < 0 || end < 0) throw new Error('Live Wallpaper callback function not found after postinstall.');
 
           const live = api.slice(start, end);
@@ -47,11 +47,25 @@ jobs:
             if (live.includes(marker)) throw new Error(`Legacy local Live Wallpaper path leaked into runtime: ${marker}`);
           }
 
+          const recoveryRequired = [
+            "from '@vercel/functions'",
+            "from '../src/recovery.js'",
+            "from '../src/tiktok-rescue.js'",
+            "command === '/reset'",
+            "command === '/resetadmin'",
+            'waitUntil(runWebhookUpdate(update, context)',
+            'prepareTikTokTelegramRescue(url, configuredUploadLimit())',
+            "recovery: 'fast-ack-v1'",
+          ];
+          for (const marker of recoveryRequired) {
+            if (!api.includes(marker)) throw new Error(`Recovery runtime marker missing: ${marker}`);
+          }
+
           const workflow = await readFile('.github/workflows/heavy-status-hq.yml', 'utf8');
           if (!workflow.includes('runs-on: macos-15')) throw new Error('macOS Live Photo runner missing.');
           if (!workflow.includes('run: python scripts/apple_live_worker.py')) throw new Error('Native Apple Live Photo worker command missing.');
 
-          console.log('Native Apple Live Photo runtime routing: OK');
+          console.log('Native Apple Live Photo + recovery runtime routing: OK');
           NODE
       - name: Resolver smoke test
         run: node scripts/smoke-test.mjs
