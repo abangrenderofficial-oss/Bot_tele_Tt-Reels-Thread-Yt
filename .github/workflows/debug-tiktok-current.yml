@@ -1,0 +1,31 @@
+name: Debug Current TikTok URL
+on:
+  workflow_dispatch:
+
+jobs:
+  debug:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm install --no-audit --no-fund
+      - name: Test TikTok rescue on reported failing URL
+        env:
+          TEST_URL: https://vt.tiktok.com/ZSqsKvFLE
+        run: |
+          node --input-type=module <<'NODE'
+          import { prepareTikTokTelegramRescue } from './src/tiktok-rescue.js';
+          const url = process.env.TEST_URL;
+          console.log('Testing URL:', url);
+          try {
+            const result = await prepareTikTokTelegramRescue(url, 49 * 1024 * 1024);
+            console.log('RESCUE_OK', {size: result.size, compressed: result.compressed, filePath: result.filePath});
+            await result.cleanup();
+          } catch (error) {
+            console.error('RESCUE_FAIL', {code: error?.code, message: error?.message, stack: error?.stack});
+            process.exitCode = 1;
+          }
+          NODE
