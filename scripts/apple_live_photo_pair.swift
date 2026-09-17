@@ -37,191 +37,89 @@ func pairJPEG(inputURL: URL, outputURL: URL, identifier: String) throws {
     }
 
     var properties = (CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [AnyHashable: Any]) ?? [:]
-    properties[kCGImagePropertyMakerAppleDictionary] = ["17": identifier]
+    var maker = (properties[kCGImagePropertyMakerAppleDictionary] as? [AnyHashable: Any]) ?? [:]
+    maker["17"] = identifier
+    properties[kCGImagePropertyMakerAppleDictionary] = maker
     CGImageDestinationAddImage(destination, image, properties as CFDictionary)
     guard CGImageDestinationFinalize(destination) else {
         throw PairError.message("Could not write paired Live Photo JPEG metadata.")
     }
 }
 
-func contentIdentifierMetadata(_ identifier: String) -> AVMetadataItem {
+func quickTimeMetadata(_ key: String, value: Any, dataType: String) -> AVMetadataItem {
     let item = AVMutableMetadataItem()
-    item.key = "com.apple.quicktime.content.identifier" as NSString
+    item.key = key as NSString
     item.keySpace = AVMetadataKeySpace(rawValue: "mdta")
-    item.value = identifier as NSString
-    item.dataType = "com.apple.metadata.datatype.UTF-8"
+    item.value = value as? NSCopying
+    item.dataType = dataType
     return item
 }
 
-func autoLivePhotoMetadata() -> AVMetadataItem {
-    let item = AVMutableMetadataItem()
-    item.key = "com.apple.quicktime.live-photo.auto" as NSString
-    item.keySpace = AVMetadataKeySpace(rawValue: "mdta")
-    item.value = NSNumber(value: UInt8(1))
-    item.dataType = "com.apple.metadata.datatype.int8"
-    return item
-}
+let contentIdentifierKey = "com.apple.quicktime.content.identifier"
+let autoLivePhotoKey = "com.apple.quicktime.live-photo.auto"
+let vitalityScoreKey = "com.apple.quicktime.live-photo.vitality-score"
+let vitalityVersionKey = "com.apple.quicktime.live-photo.vitality-scoring-version"
 
-func livePhotoVitalityScoreMetadata() -> AVMetadataItem {
-    let item = AVMutableMetadataItem()
-    item.key = "com.apple.quicktime.live-photo.vitality-score" as NSString
-    item.keySpace = AVMetadataKeySpace(rawValue: "mdta")
-    item.value = NSNumber(value: Float(1.0))
-    item.dataType = "com.apple.metadata.datatype.float32"
-    return item
-}
+let requiredWallpaperIdentifiers: Set<String> = [
+    "mdta/com.apple.quicktime.live-photo-info",
+    "mdta/com.apple.quicktime.live-photo-still-image-transform",
+    "mdta/com.apple.quicktime.still-image-time",
+]
 
-func livePhotoVitalityScoringVersionMetadata() -> AVMetadataItem {
-    let item = AVMutableMetadataItem()
-    item.key = "com.apple.quicktime.live-photo.vitality-scoring-version" as NSString
-    item.keySpace = AVMetadataKeySpace(rawValue: "mdta")
-    item.value = NSNumber(value: Int64(0))
-    item.dataType = "com.apple.metadata.datatype.int64"
-    return item
-}
-
-func stillImageTimeItem() -> AVMetadataItem {
-    let item = AVMutableMetadataItem()
-    item.key = "com.apple.quicktime.still-image-time" as NSString
-    item.keySpace = AVMetadataKeySpace(rawValue: "mdta")
-
-    // Real Apple Live Photo MOV files use 0xFF / -1 as the payload. The actual
-    // still frame position is carried by this timed metadata sample's PTS.
-    item.value = NSNumber(value: Int8(-1))
-    item.dataType = "com.apple.metadata.datatype.int8"
-    return item
-}
-
-func stillImageTimeAdaptor() throws -> AVAssetWriterInputMetadataAdaptor {
-    let specification: NSDictionary = [
-        kCMMetadataFormatDescriptionMetadataSpecificationKey_Identifier as NSString:
-            "mdta/com.apple.quicktime.still-image-time",
-        kCMMetadataFormatDescriptionMetadataSpecificationKey_DataType as NSString:
-            "com.apple.metadata.datatype.int8"
-    ]
-
-    var formatDescription: CMFormatDescription?
-    let status = CMMetadataFormatDescriptionCreateWithMetadataSpecifications(
-        allocator: kCFAllocatorDefault,
-        metadataType: kCMMetadataFormatType_Boxed,
-        metadataSpecifications: [specification] as CFArray,
-        formatDescriptionOut: &formatDescription
-    )
-    guard status == noErr, let formatDescription else {
-        throw PairError.message("Could not create Live Photo still-image-time metadata track.")
-    }
-
-    let input = AVAssetWriterInput(
-        mediaType: .metadata,
-        outputSettings: nil,
-        sourceFormatHint: formatDescription
-    )
-    return AVAssetWriterInputMetadataAdaptor(assetWriterInput: input)
-}
-
-func pairMovie(inputURL: URL, outputURL: URL, identifier: String) throws {
+func stampPreparedMovie(inputURL: URL, outputURL: URL, identifier: String) throws {
     removeIfExists(outputURL)
-    let asset = AVURLAsset(url: inputURL)
-    guard let videoTrack = asset.tracks(withMediaType: .video).first else {
-        throw PairError.message("Source Live Photo movie has no video track.")
-    }
-    guard let rawVideoFormat = videoTrack.formatDescriptions.first else {
-        throw PairError.message("Could not read source video format description.")
-    }
-    let videoFormat = rawVideoFormat as! CMFormatDescription
+    try FileManager.default.copyItem(at: inputURL, to: outputURL)
 
-    let reader = try AVAssetReader(asset: asset)
-    let videoOutput = AVAssetReaderTrackOutput(track: videoTrack, outputSettings: nil)
-    videoOutput.alwaysCopiesSampleData = false
-    try require(reader.canAdd(videoOutput), "Could not add video reader output.")
-    reader.add(videoOutput)
-
-    let writer = try AVAssetWriter(outputURL: outputURL, fileType: .mov)
-    writer.movieTimeScale = 600
-
-    let videoInput = AVAssetWriterInput(
-        mediaType: .video,
-        outputSettings: nil,
-        sourceFormatHint: videoFormat
+    // Header-only mutation is deliberate. Re-exporting a prepared Live Wallpaper
+    // MOV can drop tref/cdsc relationships between the mebx metadata tracks and
+    // the video track. AVMutableMovie.writeHeader preserves those track atoms.
+    let movie = AVMutableMovie(
+        url: outputURL,
+        options: [AVURLAssetPreferPreciseDurationAndTimingKey: true]
     )
-    videoInput.expectsMediaDataInRealTime = false
-    videoInput.transform = videoTrack.preferredTransform
-    try require(writer.canAdd(videoInput), "Could not add video writer input.")
-    writer.add(videoInput)
 
-    // Live Wallpaper does not require an audio track. Keeping the native pairer
-    // video-only avoids AVAssetWriter back-pressure/deadlocks when compressed
-    // video and audio are copied sequentially on short ephemeral jobs.
-    let metadataAdaptor = try stillImageTimeAdaptor()
-    let metadataInput = metadataAdaptor.assetWriterInput
-    try require(writer.canAdd(metadataInput), "Could not add still-image-time writer input.")
-    writer.add(metadataInput)
+    let replacedKeys: Set<String> = [
+        contentIdentifierKey,
+        autoLivePhotoKey,
+        vitalityScoreKey,
+        vitalityVersionKey,
+    ]
+    let existing = movie.metadata.filter { item in
+        guard item.keySpace?.rawValue == "mdta",
+              let key = item.key as? String else {
+            return true
+        }
+        return !replacedKeys.contains(key)
+    }
 
-    // This is the structural difference between an asset-level metadata track
-    // and a metadata track that explicitly describes the video track. iOS Lock
-    // Screen eligibility is stricter than Photos Live Photo recognition, so keep
-    // the timed metadata associated with the video rather than the movie as a whole.
-    let metadataReferent = AVAssetTrack.AssociationType.metadataReferent.rawValue
-    try require(
-        metadataInput.canAddTrackAssociation(withTrackOf: videoInput, type: metadataReferent),
-        "Could not associate Live Photo metadata track with video track."
-    )
-    metadataInput.addTrackAssociation(withTrackOf: videoInput, type: metadataReferent)
-
-    // Keep the shared Live Photo identifier, and add the movie-level vitality
-    // metadata Apple exposes for Live Photo assets. We deliberately use a high
-    // vitality score for this generated motion experiment so iOS does not treat
-    // the clip as a low-dynamism Auto Live Photo.
-    writer.metadata = [
-        contentIdentifierMetadata(identifier),
-        autoLivePhotoMetadata(),
-        livePhotoVitalityScoreMetadata(),
-        livePhotoVitalityScoringVersionMetadata(),
+    movie.metadata = existing + [
+        quickTimeMetadata(
+            contentIdentifierKey,
+            value: identifier as NSString,
+            dataType: "com.apple.metadata.datatype.UTF-8"
+        ),
+        quickTimeMetadata(
+            autoLivePhotoKey,
+            value: NSNumber(value: Int8(1)),
+            dataType: "com.apple.metadata.datatype.int8"
+        ),
+        quickTimeMetadata(
+            vitalityScoreKey,
+            value: NSNumber(value: Float(1.0)),
+            dataType: "com.apple.metadata.datatype.float32"
+        ),
+        quickTimeMetadata(
+            vitalityVersionKey,
+            value: NSNumber(value: Int64(4)),
+            dataType: "com.apple.metadata.datatype.int64"
+        ),
     ]
 
-    try require(writer.startWriting(), "AVAssetWriter could not start: \(writer.error?.localizedDescription ?? "unknown error")")
-    writer.startSession(atSourceTime: .zero)
-    try require(reader.startReading(), "AVAssetReader could not start: \(reader.error?.localizedDescription ?? "unknown error")")
-
-    let durationSeconds = max(0.1, CMTimeGetSeconds(asset.duration))
-    let stillSeconds = min(max(0.05, durationSeconds * 0.5), max(0.05, durationSeconds - 0.05))
-
-    // Match the shape of recent iPhone Live Photo files more closely: a 600 Hz
-    // metadata timeline with one one-tick sample. The sample payload is -1; its
-    // presentation timestamp is the actual still-image position.
-    let stillTime = CMTime(seconds: stillSeconds, preferredTimescale: 600)
-    let metadataTick = CMTime(value: 1, timescale: 600)
-    let metadataGroup = AVTimedMetadataGroup(
-        items: [stillImageTimeItem()],
-        timeRange: CMTimeRange(start: stillTime, duration: metadataTick)
+    try movie.writeHeader(
+        to: outputURL,
+        fileType: .mov,
+        options: .addMovieHeaderToDestination
     )
-    try require(metadataAdaptor.append(metadataGroup), "Could not append still-image-time metadata sample.")
-    metadataInput.markAsFinished()
-
-    var videoFinished = false
-    while !videoFinished {
-        if writer.status == .failed {
-            throw PairError.message("Live Photo writer failed: \(writer.error?.localizedDescription ?? "unknown error")")
-        }
-        if reader.status == .failed {
-            throw PairError.message("Live Photo reader failed: \(reader.error?.localizedDescription ?? "unknown error")")
-        }
-        if videoInput.isReadyForMoreMediaData {
-            if let sample = videoOutput.copyNextSampleBuffer() {
-                try require(videoInput.append(sample), "Could not append video sample: \(writer.error?.localizedDescription ?? "unknown error")")
-            } else {
-                videoInput.markAsFinished()
-                videoFinished = true
-            }
-        } else {
-            Thread.sleep(forTimeInterval: 0.002)
-        }
-    }
-
-    let semaphore = DispatchSemaphore(value: 0)
-    writer.finishWriting { semaphore.signal() }
-    semaphore.wait()
-    try require(writer.status == .completed, "Live Photo MOV finalization failed: \(writer.error?.localizedDescription ?? "unknown error")")
 }
 
 func jpegIdentifier(_ url: URL) -> String? {
@@ -233,99 +131,98 @@ func jpegIdentifier(_ url: URL) -> String? {
     return maker["17"] as? String
 }
 
-func movieIdentifier(_ asset: AVAsset) -> String? {
-    for item in asset.metadata(forFormat: .quickTimeMetadata) {
-        if item.key as? String == "com.apple.quicktime.content.identifier",
-           item.keySpace?.rawValue == "mdta" {
-            return item.stringValue
-        }
-    }
-    return nil
-}
-
-func movieNumberMetadata(_ asset: AVAsset, key: String) -> NSNumber? {
+func movieMetadataItem(_ asset: AVAsset, key: String) -> AVMetadataItem? {
     for item in asset.metadata(forFormat: .quickTimeMetadata) {
         if item.key as? String == key,
            item.keySpace?.rawValue == "mdta" {
-            return item.numberValue
+            return item
         }
     }
     return nil
 }
 
-func stillImageMetadataInfo(_ asset: AVAsset) -> (found: Bool, payload: Int, time: Double, duration: Double) {
-    guard let metadataTrack = asset.tracks(withMediaType: .metadata).first,
-          let reader = try? AVAssetReader(asset: asset) else {
-        return (false, 0, 0, 0)
-    }
-    let output = AVAssetReaderTrackOutput(track: metadataTrack, outputSettings: nil)
-    guard reader.canAdd(output) else { return (false, 0, 0, 0) }
-    reader.add(output)
-    guard reader.startReading() else { return (false, 0, 0, 0) }
-
-    while let sample = output.copyNextSampleBuffer() {
-        guard CMSampleBufferGetNumSamples(sample) > 0,
-              let group = AVTimedMetadataGroup(sampleBuffer: sample) else { continue }
-        for item in group.items {
-            if item.key as? String == "com.apple.quicktime.still-image-time",
-               item.keySpace?.rawValue == "mdta" {
-                return (
-                    true,
-                    item.numberValue?.intValue ?? 0,
-                    CMTimeGetSeconds(group.timeRange.start),
-                    CMTimeGetSeconds(group.timeRange.duration)
-                )
+func metadataIdentifiers(_ asset: AVAsset) -> Set<String> {
+    var identifiers = Set<String>()
+    for track in asset.tracks(withMediaType: .metadata) {
+        for raw in track.formatDescriptions {
+            let description = raw as! CMFormatDescription
+            guard let values = CMMetadataFormatDescriptionGetIdentifiers(description) else {
+                continue
+            }
+            for case let identifier as AVMetadataIdentifier in values as NSArray {
+                identifiers.insert(identifier.rawValue)
             }
         }
     }
-    return (false, 0, 0, 0)
+    return identifiers
 }
 
-func metadataTrackReferencesVideo(_ asset: AVAsset) -> Bool {
-    guard let metadataTrack = asset.tracks(withMediaType: .metadata).first,
-          let videoTrack = asset.tracks(withMediaType: .video).first else {
-        return false
+func metadataReferenceCount(_ asset: AVAsset) -> Int {
+    guard let videoTrack = asset.tracks(withMediaType: .video).first else {
+        return 0
     }
-
-    let associated = metadataTrack.associatedTracks(ofType: .metadataReferent)
-    return associated.contains { $0.trackID == videoTrack.trackID }
+    return asset.tracks(withMediaType: .metadata).filter { metadataTrack in
+        metadataTrack.associatedTracks(ofType: .metadataReferent).contains {
+            $0.trackID == videoTrack.trackID
+        }
+    }.count
 }
 
 func verifyPair(photoURL: URL, movieURL: URL, expectedIdentifier: String) throws {
-    try require(jpegIdentifier(photoURL) == expectedIdentifier, "Paired JPEG MakerApple[17] identifier verification failed.")
-    let asset = AVURLAsset(url: movieURL)
-    try require(movieIdentifier(asset) == expectedIdentifier, "Paired MOV content identifier verification failed.")
+    try require(
+        jpegIdentifier(photoURL) == expectedIdentifier,
+        "Paired JPEG MakerApple[17] identifier verification failed."
+    )
 
-    let autoLive = movieNumberMetadata(asset, key: "com.apple.quicktime.live-photo.auto")
-    let vitalityScore = movieNumberMetadata(asset, key: "com.apple.quicktime.live-photo.vitality-score")
-    let vitalityVersion = movieNumberMetadata(asset, key: "com.apple.quicktime.live-photo.vitality-scoring-version")
-    try require(autoLive?.intValue == 1, "Paired MOV Live Photo auto metadata verification failed.")
-    try require((vitalityScore?.doubleValue ?? -1) >= 0.5, "Paired MOV Live Photo vitality score verification failed.")
-    try require(vitalityVersion != nil, "Paired MOV Live Photo vitality scoring version verification failed.")
+    let asset = AVURLAsset(
+        url: movieURL,
+        options: [AVURLAssetPreferPreciseDurationAndTimingKey: true]
+    )
+    try require(
+        movieMetadataItem(asset, key: contentIdentifierKey)?.stringValue == expectedIdentifier,
+        "Paired MOV content identifier verification failed."
+    )
+    try require(
+        movieMetadataItem(asset, key: autoLivePhotoKey)?.numberValue?.intValue == 1,
+        "Paired MOV Live Photo auto metadata verification failed."
+    )
+    try require(
+        (movieMetadataItem(asset, key: vitalityScoreKey)?.numberValue?.doubleValue ?? -1) >= 0.5,
+        "Paired MOV Live Photo vitality score verification failed."
+    )
+    try require(
+        movieMetadataItem(asset, key: vitalityVersionKey) != nil,
+        "Paired MOV Live Photo vitality version verification failed."
+    )
 
-    let still = stillImageMetadataInfo(asset)
-    try require(still.found, "Paired MOV still-image-time metadata verification failed.")
-    try require(still.payload == -1, "Paired MOV still-image-time payload is not Apple-style -1.")
-    try require(still.duration > 0 && still.duration <= (1.0 / 30.0), "Paired MOV still-image-time sample is too long.")
-    try require(metadataTrackReferencesVideo(asset), "Paired MOV metadata track is not associated with the video track.")
+    let identifiers = metadataIdentifiers(asset)
+    let missing = requiredWallpaperIdentifiers.subtracting(identifiers)
+    try require(
+        missing.isEmpty,
+        "Wallpaper metadata identifiers missing: \(missing.sorted().joined(separator: ", "))."
+    )
 
+    let referenceCount = metadataReferenceCount(asset)
+    try require(
+        referenceCount >= 2,
+        "Prepared MOV lost metadata-to-video cdsc/tref associations."
+    )
+
+    let video = asset.tracks(withMediaType: .video).first
+    let fps = video?.nominalFrameRate ?? 0
+    let timeScale = video?.naturalTimeScale ?? 0
     print(
-        String(
-            format: "APPLE_LIVE_PHOTO_STRUCTURE still=%.4fs metadata_sample=%.6fs referent=video payload=%d auto=%d vitality=%.3f vitality_version=%lld",
-            still.time,
-            still.duration,
-            still.payload,
-            autoLive?.intValue ?? -1,
-            vitalityScore?.doubleValue ?? -1,
-            vitalityVersion?.int64Value ?? -1
-        )
+        "APPLE_WALLPAPER_STRUCTURE metadata=\(identifiers.sorted().joined(separator: "|")) " +
+        "referenced_tracks=\(referenceCount) fps=\(String(format: "%.3f", fps)) timescale=\(timeScale)"
     )
 }
 
 func main() throws {
     let args = CommandLine.arguments
     guard args.count == 5 else {
-        throw PairError.message("Usage: apple_live_photo_pair.swift <input.jpg> <input.mov> <output.jpg> <output.mov>")
+        throw PairError.message(
+            "Usage: apple_live_photo_pair.swift <input.jpg> <prepared.mov> <output.jpg> <output.mov>"
+        )
     }
 
     let inputPhoto = URL(fileURLWithPath: args[1])
@@ -335,7 +232,7 @@ func main() throws {
     let identifier = UUID().uuidString
 
     try pairJPEG(inputURL: inputPhoto, outputURL: outputPhoto, identifier: identifier)
-    try pairMovie(inputURL: inputMovie, outputURL: outputMovie, identifier: identifier)
+    try stampPreparedMovie(inputURL: inputMovie, outputURL: outputMovie, identifier: identifier)
     try verifyPair(photoURL: outputPhoto, movieURL: outputMovie, expectedIdentifier: identifier)
 
     print("APPLE_LIVE_PHOTO_OK identifier=\(identifier)")
