@@ -1,4 +1,4 @@
-name: Inspect raw TikTok short-link response
+name: Search TikWM feed via POST
 on:
   push:
     branches: [diag/tikwm-search-recover]
@@ -10,24 +10,41 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - name: Dump redirect response safely
-        timeout-minutes: 3
+      - name: Search exact target metadata
+        timeout-minutes: 5
         run: |
           node --input-type=module <<'NODE'
-          const target='https://vt.tiktok.com/ZSqsKvFLE';
-          const uas=[
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/140.0 Safari/537.36',
-            'Mozilla/5.0 (iPhone; CPU iPhone OS 18_6 like Mac OS X) AppleWebKit/605.1.15 Version/18.6 Mobile/15E148 Safari/604.1'
-          ];
-          for(const ua of uas){
-            const r=await fetch(target,{redirect:'manual',headers:{'user-agent':ua,accept:'*/*','accept-language':'en-US,en;q=0.9'},signal:AbortSignal.timeout(12000)});
-            const headers=Object.fromEntries([...r.headers.entries()].filter(([k])=>!['set-cookie'].includes(k.toLowerCase())));
-            const body=await r.text();
-            console.log('\nSTATUS',r.status,'URL',r.url,'HEADERS',JSON.stringify(headers,null,2),'BODY_LEN',body.length,'BODY',body.slice(0,10000));
-            const ids=[...body.matchAll(/\b\d{17,20}\b/g)].map(m=>m[0]);
-            const urls=[...body.matchAll(/https?:\/\/[^"'<>\s]+/g)].map(m=>m[0]);
-            console.log('NUMERIC_IDS',ids.slice(0,50));
-            console.log('BODY_URLS',urls.slice(0,50));
+          const queries=['2020 vibes #4k60fps #anime #aesthetic #harusq #bakerysqd','2020 vibes','harusq','bakerysqd'];
+          const cursors=['0','30','60','90'];
+          const ua='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/140.0 Safari/537.36';
+          for (const q of queries) {
+            for (const cursor of cursors) {
+              try {
+                const body=new URLSearchParams({keywords:q,count:'30',cursor,web:'1',hd:'1'});
+                const r=await fetch('https://www.tikwm.com/api/feed/search',{
+                  method:'POST',
+                  headers:{accept:'application/json','content-type':'application/x-www-form-urlencoded;charset=UTF-8','user-agent':ua,referer:'https://www.tikwm.com/',origin:'https://www.tikwm.com'},
+                  body,
+                  signal:AbortSignal.timeout(15000),
+                });
+                const text=await r.text();
+                let j=null; try{j=JSON.parse(text)}catch{}
+                const arr=Array.isArray(j?.data?.videos)?j.data.videos:(Array.isArray(j?.data)?j.data:[]);
+                console.log('SEARCH',JSON.stringify(q),'CURSOR',cursor,'HTTP',r.status,'CODE',j?.code,'MSG',j?.msg,'COUNT',arr.length,'RAW',j?'' : text.slice(0,300));
+                for(const v of arr){
+                  const title=String(v.title||v.desc||'').replace(/\s+/g,' ').trim();
+                  const low=title.toLowerCase();
+                  const score=['2020 vibes','4k60fps','harusq','bakerysqd'].filter(x=>low.includes(x)).length;
+                  if(score>=2 || (low.includes('2020 vibes') && low.includes('harusq'))){
+                    const id=v.video_id||v.id||v.aweme_id||'';
+                    const author=v.author?.unique_id||v.author?.uniqueId||v.author?.nickname||v.author||'';
+                    console.log('MATCH SCORE',score,'ID',id,'AUTHOR',author,'TITLE',title.slice(0,500));
+                    console.log('PLAY',String(v.play||v.play_addr||'').slice(0,800));
+                    console.log('HDPLAY',String(v.hdplay||'').slice(0,800));
+                  }
+                }
+              } catch(e) { console.log('SEARCH_ERR',JSON.stringify(q),cursor,e?.message||e); }
+            }
           }
           NODE
-      - run: echo raw-redirect-probe-v1
+      - run: echo tikwm-feed-post-v1
