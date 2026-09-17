@@ -1,4 +1,4 @@
-name: Diagnose TikWM search recovery
+name: Diagnose alternate TikTok resolvers
 on:
   push:
     branches: [diag/tikwm-search-recover]
@@ -10,26 +10,62 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - name: Search TikWM feed
+      - name: Test exact TikTok link against SSSTik and LoveTik
         run: |
           node --input-type=module <<'NODE'
-          const qs = ['2020 vibes','harusq','bakerysqd','4k60fps anime aesthetic harusq bakerysqd'];
+          const link='https://vt.tiktok.com/ZSqsKvFLE';
           const ua='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/140.0 Safari/537.36';
-          for (const q of qs) {
-            for (const cursor of ['0','30','60']) {
-              const u=new URL('https://www.tikwm.com/api/feed/search');
-              u.searchParams.set('keywords',q); u.searchParams.set('count','30'); u.searchParams.set('cursor',cursor); u.searchParams.set('hd','1');
-              const r=await fetch(u,{headers:{accept:'application/json','user-agent':ua,referer:'https://www.tikwm.com/'}});
-              const j=await r.json().catch(()=>null);
-              const arr=Array.isArray(j?.data?.videos)?j.data.videos:(Array.isArray(j?.data)?j.data:[]);
-              console.log('QUERY',JSON.stringify(q),'CURSOR',cursor,'HTTP',r.status,'CODE',j?.code,'MSG',j?.msg,'N',arr.length);
-              for (const v of arr) {
-                const title=String(v.title||v.desc||'').replace(/\s+/g,' ').slice(0,300);
-                const author=v.author?.unique_id||v.author?.uniqueId||v.author?.nickname||v.author||'';
-                const id=v.video_id||v.id||v.aweme_id||'';
-                if (/2020 vibes|harusq|bakerysqd|4k60fps/i.test(title)) console.log('MATCH','ID',id,'AUTHOR',author,'TITLE',title,'PLAY',String(v.play||v.play_addr||'').slice(0,160));
-              }
-            }
+
+          async function ssstik() {
+            try {
+              const base='https://ssstik.io';
+              const page=await fetch(base,{headers:{'user-agent':ua}});
+              const html=await page.text();
+              const m=html.match(/s_tt\s*=\s*["']([^"']+)["']/);
+              console.log('SSS_PAGE',page.status,'TOKEN',Boolean(m));
+              if (!m) return;
+              const r=await fetch(base+'/abc?url=dl',{
+                method:'POST',
+                headers:{'content-type':'application/x-www-form-urlencoded; charset=UTF-8',origin:base,referer:base+'/en','user-agent':ua},
+                body:new URLSearchParams({id:link,locale:'en',tt:m[1]}),
+              });
+              const t=await r.text();
+              const vm=t.match(/<a[^>]+href="([^"]+)"[^>]*class="[^"]*without_watermark[^"]*"/i) || t.match(/<a[^>]+class="[^"]*without_watermark[^"]*"[^>]+href="([^"]+)"/i);
+              console.log('SSS_POST',r.status,'LEN',t.length,'VIDEO',Boolean(vm));
+              if (vm) console.log('SSS_URL',vm[1].slice(0,500));
+            } catch(e) { console.log('SSS_ERR',e?.stack||e); }
           }
+
+          async function lovetik() {
+            try {
+              const r=await fetch('https://lovetik.com/api/ajax/search',{
+                method:'POST',
+                headers:{'content-type':'application/x-www-form-urlencoded',origin:'https://lovetik.com',referer:'https://lovetik.com/','user-agent':ua},
+                body:new URLSearchParams({query:link}),
+              });
+              const txt=await r.text();
+              let j=null; try { j=JSON.parse(txt); } catch {}
+              console.log('LOVE_HTTP',r.status,'LEN',txt.length,'JSON',Boolean(j),'LINKS',Array.isArray(j?.links)?j.links.length:0);
+              if (Array.isArray(j?.links)) {
+                for (const x of j.links.slice(0,8)) console.log('LOVE_LINK',x?.t||'',String(x?.a||x?.url||'').slice(0,500));
+              }
+            } catch(e) { console.log('LOVE_ERR',e?.stack||e); }
+          }
+
+          async function hosted() {
+            try {
+              const r=await fetch('https://link-unshortener.vercel.app/api/tiktok',{
+                method:'POST',
+                headers:{'content-type':'application/json','user-agent':ua},
+                body:JSON.stringify({url:link}),
+              });
+              const txt=await r.text();
+              console.log('HOSTED_HTTP',r.status,'BODY',txt.slice(0,2000));
+            } catch(e) { console.log('HOSTED_ERR',e?.stack||e); }
+          }
+
+          await ssstik();
+          await lovetik();
+          await hosted();
           NODE
-      - run: echo diagnostic-trigger-v2
+      - run: echo alternate-resolver-diagnostic-v1
