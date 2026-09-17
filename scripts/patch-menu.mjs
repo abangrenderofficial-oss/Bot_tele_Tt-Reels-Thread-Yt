@@ -3,7 +3,7 @@ import { readFile, writeFile } from 'node:fs/promises';
 const apiFile = new URL('../api/telegram.js', import.meta.url);
 let source = await readFile(apiFile, 'utf8');
 
-const menuFunction = `function commandMenuText(userId) {\n  const lines = [\n    '📋 Command Menu',\n    '',\n    '/start — Info bot',\n    '/help — Bantuan ringkas',\n    '/menu — Senarai command',\n    '/status <link> — Buat Status HQ dari link',\n    '/reset — Reset sesi sendiri jika bot tersangkut',\n  ];\n\n  if (isResetAdmin(userId)) {\n    lines.push(\n      '',\n      '👑 Owner',\n      '/resetadmin — Reset & recovery semua user',\n      '/connect — Sambung group pemantauan',\n      '/disconnect — Putus group pemantauan',\n    );\n  }\n\n  return lines.join('\\\\n');\n}\n\n`;
+const menuFunction = `function commandMenuText(userId) {\n  const lines = [\n    '📋 Command Menu',\n    '',\n    '/start — Info bot',\n    '/help — Bantuan ringkas',\n    '/menu — Senarai command',\n    '/status <link> — Buat Status HQ dari link',\n    '/reset — Reset sesi sendiri jika bot tersangkut',\n  ];\n\n  if (isResetAdmin(userId)) {\n    lines.push(\n      '',\n      '👑 Owner',\n      '/resetadmin — Reset & recovery semua user',\n      '/connect — Sambung group pemantauan',\n      '/disconnect — Putus group pemantauan',\n    );\n  }\n\n  return lines.join(String.fromCharCode(10));\n}\n\n`;
 
 if (!source.includes('function commandMenuText(userId) {')) {
   const marker = 'async function runWebhookUpdate(update, context) {';
