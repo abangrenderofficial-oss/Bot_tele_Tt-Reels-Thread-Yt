@@ -95,9 +95,10 @@ func pairMovie(inputURL: URL, outputURL: URL, identifier: String) throws {
     guard let videoTrack = asset.tracks(withMediaType: .video).first else {
         throw PairError.message("Source Live Photo movie has no video track.")
     }
-    guard let videoFormat = videoTrack.formatDescriptions.first else {
+    guard let rawVideoFormat = videoTrack.formatDescriptions.first else {
         throw PairError.message("Could not read source video format description.")
     }
+    let videoFormat = rawVideoFormat as! CMFormatDescription
 
     let reader = try AVAssetReader(asset: asset)
     let videoOutput = AVAssetReaderTrackOutput(track: videoTrack, outputSettings: nil)
@@ -119,7 +120,8 @@ func pairMovie(inputURL: URL, outputURL: URL, identifier: String) throws {
     var audioInput: AVAssetWriterInput?
     var audioOutput: AVAssetReaderTrackOutput?
     if let audioTrack = asset.tracks(withMediaType: .audio).first,
-       let audioFormat = audioTrack.formatDescriptions.first {
+       let rawAudioFormat = audioTrack.formatDescriptions.first {
+        let audioFormat = rawAudioFormat as! CMFormatDescription
         let output = AVAssetReaderTrackOutput(track: audioTrack, outputSettings: nil)
         output.alwaysCopiesSampleData = false
         if reader.canAdd(output) {
