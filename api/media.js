@@ -10,6 +10,20 @@ const COPY_HEADERS = [
   'last-modified',
 ];
 
+function fetchWithHeaderTimeout(url, options, timeoutMs) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), Math.max(5000, Number(timeoutMs) || 30000));
+  return fetch(url, { ...options, signal: controller.signal })
+    .then((response) => {
+      clearTimeout(timer);
+      return response;
+    })
+    .catch((error) => {
+      clearTimeout(timer);
+      throw error;
+    });
+}
+
 export default async function handler(req, res) {
   if (req.method !== 'GET' && req.method !== 'HEAD') {
     res.setHeader('Allow', 'GET, HEAD');
@@ -32,14 +46,17 @@ export default async function handler(req, res) {
 
   let upstream;
   try {
-    upstream = await fetch(verified.url, {
-      method: req.method,
-      headers,
-      redirect: 'follow',
-      signal: AbortSignal.timeout(45000),
-    });
+    upstream = await fetchWithHeaderTimeout(
+      verified.url,
+      {
+        method: req.method,
+        headers,
+        redirect: 'follow',
+      },
+      process.env.MEDIA_RELAY_HEADER_TIMEOUT_MS || 30000,
+    );
   } catch (error) {
-    console.error('Media relay fetch failed:', error?.message);
+    console.error('[relay] upstream header fetch failed:', error?.message);
     return res.status(502).json({ ok: false, error: 'upstream_fetch_failed' });
   }
 
@@ -56,13 +73,13 @@ export default async function handler(req, res) {
   try {
     const stream = Readable.fromWeb(upstream.body);
     stream.on('error', (error) => {
-      console.error('Media relay stream failed:', error?.message);
+      console.error('[relay] stream failed:', error?.message);
       if (!res.headersSent) res.statusCode = 502;
       res.end();
     });
     stream.pipe(res);
   } catch (error) {
-    console.error('Media relay pipe failed:', error?.message);
+    console.error('[relay] pipe failed:', error?.message);
     if (!res.headersSent) return res.status(502).end('Relay failed');
     return res.end();
   }

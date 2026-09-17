@@ -1,7 +1,8 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import ffmpegPath from 'ffmpeg-static';
-import { parseMedia, chooseBestVideo } from '../src/downloader.js';
+import { chooseBestVideo, resolveMedia } from '../src/bot/media-resolver.js';
+import { localMediaLane } from '../src/bot/job-lanes.js';
 import { prepareWhatsAppStatusHQ } from '../src/status-hq.js';
 
 const execFileAsync = promisify(execFile);
@@ -26,7 +27,7 @@ export default async function handler(req, res) {
   let prepared = null;
 
   try {
-    const media = await parseMedia(TEST_URL);
+    const media = await resolveMedia('tiktok', TEST_URL);
     const best = chooseBestVideo(media?.videos || []);
     if (!best) {
       return res.status(200).json({
@@ -37,13 +38,17 @@ export default async function handler(req, res) {
       });
     }
 
-    prepared = await prepareWhatsAppStatusHQ({
-      sourceUrl: TEST_URL,
-      platform: 'tiktok',
-      video: best,
+    const result = await localMediaLane(async () => {
+      prepared = await prepareWhatsAppStatusHQ({
+        sourceUrl: media?.canonicalUrl || TEST_URL,
+        platform: 'tiktok',
+        video: best,
+      });
+      const output = await probeDimensions(prepared.filePath);
+      return { prepared, output };
     });
 
-    const output = await probeDimensions(prepared.filePath);
+    const output = result.output;
     const sourceRatio = prepared.source?.width && prepared.source?.height
       ? prepared.source.width / prepared.source.height
       : null;
@@ -54,6 +59,7 @@ export default async function handler(req, res) {
     return res.status(200).json({
       ok: Boolean(prepared.filePath && prepared.size && ratioOk),
       stage: 'complete',
+      architecture: 'isolated-status-lane-v1',
       ms: Date.now() - started,
       singleFile: true,
       sourceDuration: prepared.source?.duration || null,

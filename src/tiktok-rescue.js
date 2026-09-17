@@ -94,7 +94,7 @@ function compressionPlan(metadata, maxBytes) {
   const duration = Number(metadata?.duration || 0);
   if (!Number.isFinite(duration) || duration <= 0) return null;
 
-  const targetBytes = Math.floor(maxBytes * 0.90);
+  const targetBytes = Math.floor(maxBytes * 0.78);
   const audioKbps = duration > 10 * 60 ? 96 : 128;
   const totalKbps = Math.floor((targetBytes * 8) / duration / 1000);
   const videoKbps = totalKbps - audioKbps - 24;
@@ -130,11 +130,16 @@ async function compressForTelegram(inputPath, outputPath, metadata, maxBytes) {
     ffmpegPath,
     [
       '-y',
+      '-hide_banner',
+      '-loglevel', 'error',
+      '-nostats',
+      '-nostdin',
       '-i', inputPath,
       '-map', '0:v:0',
       '-map', '0:a:0?',
       '-vf', scale,
       '-c:v', 'libx264',
+      '-threads', String(Math.max(1, Math.min(4, Number(process.env.TIKTOK_RESCUE_COMPRESS_THREADS || 4)))),
       '-preset', String(process.env.TIKTOK_RESCUE_COMPRESS_PRESET || 'veryfast'),
       '-profile:v', 'high',
       '-pix_fmt', 'yuv420p',
@@ -148,7 +153,7 @@ async function compressForTelegram(inputPath, outputPath, metadata, maxBytes) {
       '-map_metadata', '-1',
       outputPath,
     ],
-    commandOptions(Number(process.env.TIKTOK_RESCUE_COMPRESS_TIMEOUT_MS || 50_000)),
+    commandOptions(Number(process.env.TIKTOK_RESCUE_COMPRESS_TIMEOUT_MS || 120_000)),
   );
 
   const fileStat = await stat(outputPath);
