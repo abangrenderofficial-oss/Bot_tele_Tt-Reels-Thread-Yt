@@ -41,6 +41,13 @@ for (const [name, url] of cases) {
       }
     }
 
+    const protectedButRecoverable = Boolean(
+      video &&
+      !reachable &&
+      video.sourceUrl &&
+      [401, 403].includes(status),
+    );
+
     console.log(JSON.stringify({
       name,
       ok: true,
@@ -49,10 +56,16 @@ for (const [name, url] of cases) {
       reachable,
       status,
       customHeaders: Boolean(video?.headers && Object.keys(video.headers).length),
-      note: name === 'YouTube' ? 'metadata only; production uses dedicated yt-dlp/FFmpeg pipeline' : undefined,
+      sourceFallback: Boolean(video?.sourceUrl),
+      protectedButRecoverable,
+      note: name === 'YouTube'
+        ? 'metadata only; production uses dedicated yt-dlp/FFmpeg pipeline'
+        : protectedButRecoverable
+          ? 'Direct CDN URL is protected; production falls back to the original post URL via yt-dlp.'
+          : undefined,
     }));
 
-    if (shouldProbeDirectUrl && !reachable) failed = true;
+    if (shouldProbeDirectUrl && !reachable && !protectedButRecoverable) failed = true;
   } catch (error) {
     if (name === 'YouTube' && isKnownYouTubeCiBlock(error)) {
       console.warn(JSON.stringify({
