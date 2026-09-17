@@ -7,38 +7,23 @@ on:
 jobs:
   debug:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 8
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - run: npm install --no-audit --no-fund
-      - name: Test TikTok short-link resolution paths
+      - name: Test fallback resolver services
         env:
           TEST_URL: https://vt.tiktok.com/ZSqsKvFLE
         run: |
           node --input-type=module <<'NODE'
-          const input = process.env.TEST_URL;
-          async function get(label,url,headers={}) {
-            try {
-              const r=await fetch(url,{headers:{'User-Agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/140.0 Safari/537.36',Accept:'application/json,text/html;q=0.9,*/*;q=0.8',...headers},redirect:'follow',signal:AbortSignal.timeout(20000)});
-              const text=await r.text();
-              console.log(label,'status',r.status,'final',r.url,'body',text.slice(0,1800));
-              return {r,text};
-            } catch(e){console.log(label,'ERR',e.name,e.message);return null;}
+          const input=process.env.TEST_URL;
+          async function hit(label,url){
+            try{const r=await fetch(url,{headers:{'User-Agent':'Mozilla/5.0',Accept:'application/json,text/plain,*/*'},signal:AbortSignal.timeout(25000)});const t=await r.text();console.log(label,'status',r.status,'body',t.slice(0,2200));}
+            catch(e){console.log(label,'ERR',e.name,e.message);}
           }
-          await get('SHORT',input);
-          const oe=new URL('https://www.tiktok.com/oembed'); oe.searchParams.set('url',input); await get('OEMBED',oe);
-          const tikwm=new URL('https://www.tikwm.com/api/'); tikwm.searchParams.set('url',input); tikwm.searchParams.set('hd','1'); await get('TIKWM',tikwm);
-          const alt=new URL('https://tdownv4.sl-bjs.workers.dev/'); alt.searchParams.set('down',input); await get('ALT',alt);
-      - name: Test current yt-dlp rescue
-        continue-on-error: true
-        env:
-          TEST_URL: https://vt.tiktok.com/ZSqsKvFLE
-        run: |
-          node --input-type=module <<'NODE'
-          import { prepareTikTokTelegramRescue } from './src/tiktok-rescue.js';
-          try { const r=await prepareTikTokTelegramRescue(process.env.TEST_URL,49*1024*1024); console.log('RESCUE_OK',{size:r.size,compressed:r.compressed}); await r.cleanup(); }
-          catch(e){ console.error('RESCUE_FAIL',{code:e?.code,message:e?.message}); process.exitCode=1; }
+          const clip=new URL('https://clipx.zamdev.workers.dev/'); clip.searchParams.set('url',input); await hit('CLIPX',clip);
+          const go=new URL('https://godownloader.com/api/tiktok-no-watermark-free'); go.searchParams.set('url',input); go.searchParams.set('key','godownloader.com'); await hit('GODOWNLOADER',go);
+          const save=new URL('https://www.tikwm.com/api/'); save.searchParams.set('url',input); save.searchParams.set('hd','1'); await hit('TIKWM',save);
           NODE
