@@ -15,5 +15,43 @@ jobs:
       - run: npm install
       - name: Syntax check
         run: npm run check
+      - name: Verify Apple Live Photo runtime routing
+        shell: bash
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile } from 'node:fs/promises';
+
+          const api = await readFile('api/telegram.js', 'utf8');
+          const start = api.indexOf('async function processLiveWallpaperButton(callbackQuery, baseUrl) {');
+          const end = api.indexOf("async function processStandardDownload(chatId, url, platform, baseUrl, mirrorGroupId = '', from = {}, sourceMessage = null) {", start);
+          if (start < 0 || end < 0) throw new Error('Live Wallpaper callback function not found after postinstall.');
+
+          const live = api.slice(start, end);
+          const required = [
+            'dispatchHeavyMediaJob({',
+            "action: 'live_wallpaper'",
+            'callbackMessageId',
+            'sourceMessageId: callbackMessageId',
+            'heavyWorkerConfigured()',
+          ];
+          for (const marker of required) {
+            if (!live.includes(marker)) throw new Error(`Native Apple Live Photo runtime marker missing: ${marker}`);
+          }
+
+          const forbidden = [
+            'prepareIPhoneLiveWallpaper({',
+            'sendLivePhotoFileUpload(',
+            'getTelegramFileSource(fileId)',
+          ];
+          for (const marker of forbidden) {
+            if (live.includes(marker)) throw new Error(`Legacy local Live Wallpaper path leaked into runtime: ${marker}`);
+          }
+
+          const workflow = await readFile('.github/workflows/heavy-status-hq.yml', 'utf8');
+          if (!workflow.includes('runs-on: macos-15')) throw new Error('macOS Live Photo runner missing.');
+          if (!workflow.includes('run: python scripts/apple_live_worker.py')) throw new Error('Native Apple Live Photo worker command missing.');
+
+          console.log('Native Apple Live Photo runtime routing: OK');
+          NODE
       - name: Resolver smoke test
         run: node scripts/smoke-test.mjs
