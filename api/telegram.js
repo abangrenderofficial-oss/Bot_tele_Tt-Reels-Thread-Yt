@@ -196,14 +196,84 @@ function userLabel(from = {}) {
   return name || (from.id ? `Telegram ID ${from.id}` : 'Unknown user');
 }
 
-async function mirrorVideoToGroup(sourceChatId, sentMessage, mirrorGroupId, from) {
+function userFullName(from = {}) {
+  return [from.first_name, from.last_name].filter(Boolean).join(' ').trim() || '-';
+}
+
+function formatAuditTime(unixSeconds) {
+  const seconds = Number(unixSeconds || 0);
+  if (!seconds) return new Date().toLocaleString('en-GB', { timeZone: 'Asia/Kuala_Lumpur', hour12: false });
+  return new Date(seconds * 1000).toLocaleString('en-GB', { timeZone: 'Asia/Kuala_Lumpur', hour12: false });
+}
+
+function buildAuditCaption(from = {}, audit = {}, originalCaption = '') {
+  const username = from.username ? `@${from.username}` : '-';
+  const platform = audit.platform ? platformLabel(audit.platform) : '-';
+  const lines = [
+    '📋 USER RECORD',
+    `👤 Username: ${username}`,
+    `🆔 Telegram ID: ${from.id || '-'}`,
+    `📝 Nama: ${userFullName(from)}`,
+    `🌐 Language: ${from.language_code || '-'}`,
+    `💎 Premium: ${from.is_premium ? 'Yes' : 'No'}`,
+    `🕒 Masa: ${formatAuditTime(audit.sourceTimestamp)}`,
+    `📱 Platform: ${platform}`,
+    `💬 Message ID: ${audit.sourceMessageId || '-'}`,
+    ...(audit.sourceUrl ? [`🔗 Link: ${audit.sourceUrl}`] : []),
+  ];
+
+  if (originalCaption) {
+    lines.push('', '🎬 VIDEO', originalCaption);
+  }
+
+  return lines.join('\n').slice(0, 1024);
+}
+
+async function latestProfilePhotoFileId(userId) {
+  if (!userId) return '';
+  try {
+    const result = await telegram('getUserProfilePhotos', {
+      user_id: userId,
+      offset: 0,
+      limit: 1,
+    });
+    const sizes = result?.photos?.[0];
+    return Array.isArray(sizes) && sizes.length ? String(sizes.at(-1)?.file_id || '') : '';
+  } catch (error) {
+    console.warn('Profile photo lookup failed:', error?.code, error?.message);
+    return '';
+  }
+}
+
+async function mirrorVideoToGroup(sourceChatId, sentMessage, mirrorGroupId, from, audit = {}) {
   if (!mirrorGroupId || !sentMessage?.message_id) return false;
   if (String(sourceChatId) === String(mirrorGroupId)) return false;
 
   const originalCaption = String(sentMessage.caption || '').trim();
-  const caption = [`👤 User: ${userLabel(from)}`, originalCaption].filter(Boolean).join('\n').slice(0, 1024);
+  const caption = buildAuditCaption(from, audit, originalCaption);
+  const profilePhotoId = await latestProfilePhotoFileId(from?.id);
+  const videoFileId = sentMessage?.video?.file_id;
 
   try {
+    if (profilePhotoId && videoFileId) {
+      await telegram('sendMediaGroup', {
+        chat_id: mirrorGroupId,
+        media: [
+          {
+            type: 'photo',
+            media: profilePhotoId,
+            caption,
+          },
+          {
+            type: 'video',
+            media: videoFileId,
+            supports_streaming: true,
+          },
+        ],
+      });
+      return true;
+    }
+
     await telegram('copyMessage', {
       chat_id: mirrorGroupId,
       from_chat_id: sourceChatId,
@@ -478,13 +548,19 @@ async function processTikTokVideo(callbackQuery, mirrorGroupId = '') {
   try {
     await sendChatAction(chatId, 'upload_video').catch(() => {});
     preparedVideo = await prepareTikTokSlideshowVideo(slideshow, configuredUploadLimit());
+    const sourceUrl = extractFirstUrl(callbackQuery?.message?.text || '');
     const sent = await sendVideoFileUpload(
       chatId,
       preparedVideo.filePath,
-      sourceCaption('TikTok slideshow', extractFirstUrl(callbackQuery?.message?.text || ''), preparedVideo.quality),
+      sourceCaption('TikTok slideshow', sourceUrl, preparedVideo.quality),
       statusButton(),
     );
-    await mirrorVideoToGroup(chatId, sent, mirrorGroupId, callbackQuery.from);
+    await mirrorVideoToGroup(chatId, sent, mirrorGroupId, callbackQuery.from, {
+      sourceUrl,
+      platform: 'tiktok',
+      sourceMessageId: callbackQuery?.message?.message_id,
+      sourceTimestamp: callbackQuery?.message?.date,
+    });
   } catch (error) {
     console.error('TikTok slideshow video failed:', error?.code, error?.message);
     await sendMessage(chatId, '❌ Tak berjaya gabungkan slideshow + audio menjadi video. Cuba semula kemudian.');
@@ -604,7 +680,7 @@ async function processStatusButton(callbackQuery) {
   return true;
 }
 
-async function processStandardDownload(chatId, url, platform, baseUrl, mirrorGroupId = '', from = {}) {
+async function processStandardDownload(chatId, url, platform, baseUrl, mirrorGroupId = '', from = {}, sourceMessage = null) {
   await sendChatAction(chatId, 'typing').catch(() => {});
 
   let media;
@@ -667,7 +743,12 @@ async function processStandardDownload(chatId, url, platform, baseUrl, mirrorGro
   }
 
   if (sentVideo) {
-    await mirrorVideoToGroup(chatId, sentVideo, mirrorGroupId, from);
+    await mirrorVideoToGroup(chatId, sentVideo, mirrorGroupId, from, {
+      sourceUrl: url,
+      platform,
+      sourceMessageId: sourceMessage?.message_id,
+      sourceTimestamp: sourceMessage?.date,
+    });
   }
 
   if (platform === 'youtube' && !sentVideo && !candidates.length) {
@@ -737,7 +818,7 @@ async function processMessage(message, context) {
     return;
   }
 
-  await processStandardDownload(chatId, url, platform, context.baseUrl, context.mirrorGroupId, message.from);
+  await processStandardDownload(chatId, url, platform, context.baseUrl, context.mirrorGroupId, message.from, message);
 }
 
 export default async function handler(req, res) {
