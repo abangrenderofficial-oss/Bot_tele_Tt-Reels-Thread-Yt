@@ -499,6 +499,24 @@ async function disableChoiceButtons(callbackQuery) {
   }).catch(() => {});
 }
 
+async function claimStatusButton(callbackQuery) {
+  const chatId = callbackQuery?.message?.chat?.id;
+  const messageId = callbackQuery?.message?.message_id;
+  if (!chatId || !messageId) return false;
+
+  try {
+    await telegram('editMessageReplyMarkup', {
+      chat_id: chatId,
+      message_id: messageId,
+      reply_markup: { inline_keyboard: [] },
+    });
+    return true;
+  } catch (error) {
+    console.warn('Status HQ button already used or could not be claimed:', error?.code, error?.message);
+    return false;
+  }
+}
+
 async function resolveChoiceSource(callbackQuery) {
   const chatId = callbackQuery?.message?.chat?.id;
   const sourceText = callbackQuery?.message?.text || callbackQuery?.message?.caption || '';
@@ -654,11 +672,20 @@ async function processStatusButton(callbackQuery) {
   const sourcePlatform = sourceUrl ? detectPlatform(sourceUrl) : null;
   if (!chatId) return true;
 
+  const claimed = await claimStatusButton(callbackQuery);
+  if (!claimed) {
+    await telegram('answerCallbackQuery', {
+      callback_query_id: callbackQuery.id,
+      text: 'Status HQ untuk video ini dah digunakan. Hantar link semula untuk buat lagi.',
+      show_alert: false,
+    }).catch(() => {});
+    return true;
+  }
+
   await telegram('answerCallbackQuery', {
     callback_query_id: callbackQuery.id,
     text: 'Status HQ sedang diproses…',
   }).catch(() => {});
-  await disableChoiceButtons(callbackQuery);
   await sendChatAction(chatId, 'upload_video').catch(() => {});
 
   let prepared = null;
