@@ -1,4 +1,4 @@
-name: Diagnose alternate TikTok resolvers
+name: Diagnose TikTok short-link resolution
 on:
   push:
     branches: [diag/tikwm-search-recover]
@@ -10,62 +10,33 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - name: Test exact TikTok link against SSSTik and LoveTik
+      - name: Probe exact short link
         run: |
           node --input-type=module <<'NODE'
           const link='https://vt.tiktok.com/ZSqsKvFLE';
-          const ua='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/140.0 Safari/537.36';
-
-          async function ssstik() {
+          const uas={
+            desktop:'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/140.0 Safari/537.36',
+            iphone:'Mozilla/5.0 (iPhone; CPU iPhone OS 18_6 like Mac OS X) AppleWebKit/605.1.15 Version/18.6 Mobile/15E148 Safari/604.1',
+            android:'Mozilla/5.0 (Linux; Android 15; Pixel 9 Pro) AppleWebKit/537.36 Chrome/140.0 Mobile Safari/537.36',
+            googlebot:'Mozilla/5.0 (Linux; Android 6.0.1; Nexus 5X Build/MMB29P) AppleWebKit/537.36 Chrome/41.0.2272.96 Mobile Safari/537.36 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)',
+            facebook:'facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)',
+            twitter:'Twitterbot/1.0',
+            tiktokapp:'com.zhiliaoapp.musically/2023600030 (Linux; U; Android 13; en_US; Pixel 7; Build/TQ3A.230805.001; Cronet/TTNetVersion:4d8a3f91 2023-08-01 QuicVersion:47946d2a 2023-07-11)'
+          };
+          for (const [name,ua] of Object.entries(uas)) {
             try {
-              const base='https://ssstik.io';
-              const page=await fetch(base,{headers:{'user-agent':ua}});
-              const html=await page.text();
-              const m=html.match(/s_tt\s*=\s*["']([^"']+)["']/);
-              console.log('SSS_PAGE',page.status,'TOKEN',Boolean(m));
-              if (!m) return;
-              const r=await fetch(base+'/abc?url=dl',{
-                method:'POST',
-                headers:{'content-type':'application/x-www-form-urlencoded; charset=UTF-8',origin:base,referer:base+'/en','user-agent':ua},
-                body:new URLSearchParams({id:link,locale:'en',tt:m[1]}),
-              });
-              const t=await r.text();
-              const vm=t.match(/<a[^>]+href="([^"]+)"[^>]*class="[^"]*without_watermark[^"]*"/i) || t.match(/<a[^>]+class="[^"]*without_watermark[^"]*"[^>]+href="([^"]+)"/i);
-              console.log('SSS_POST',r.status,'LEN',t.length,'VIDEO',Boolean(vm));
-              if (vm) console.log('SSS_URL',vm[1].slice(0,500));
-            } catch(e) { console.log('SSS_ERR',e?.stack||e); }
+              const r=await fetch(link,{redirect:'manual',headers:{'user-agent':ua,'accept-language':'en-US,en;q=0.9',accept:'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'}});
+              console.log('REDIRECT',name,r.status,r.headers.get('location'),'SETCOOKIE',String(r.headers.get('set-cookie')||'').slice(0,180));
+            } catch(e) { console.log('REDIRECT_ERR',name,e?.message||e); }
           }
 
-          async function lovetik() {
+          for (const input of [link, link+'/', link+'?is_from_webapp=1&sender_device=pc', link+'?_r=1']) {
             try {
-              const r=await fetch('https://lovetik.com/api/ajax/search',{
-                method:'POST',
-                headers:{'content-type':'application/x-www-form-urlencoded',origin:'https://lovetik.com',referer:'https://lovetik.com/','user-agent':ua},
-                body:new URLSearchParams({query:link}),
-              });
+              const u='https://www.tiktok.com/oembed?url='+encodeURIComponent(input);
+              const r=await fetch(u,{headers:{'user-agent':uas.desktop,accept:'application/json'}});
               const txt=await r.text();
-              let j=null; try { j=JSON.parse(txt); } catch {}
-              console.log('LOVE_HTTP',r.status,'LEN',txt.length,'JSON',Boolean(j),'LINKS',Array.isArray(j?.links)?j.links.length:0);
-              if (Array.isArray(j?.links)) {
-                for (const x of j.links.slice(0,8)) console.log('LOVE_LINK',x?.t||'',String(x?.a||x?.url||'').slice(0,500));
-              }
-            } catch(e) { console.log('LOVE_ERR',e?.stack||e); }
+              console.log('OEMBED',input,r.status,txt.slice(0,2000));
+            } catch(e) { console.log('OEMBED_ERR',input,e?.message||e); }
           }
-
-          async function hosted() {
-            try {
-              const r=await fetch('https://link-unshortener.vercel.app/api/tiktok',{
-                method:'POST',
-                headers:{'content-type':'application/json','user-agent':ua},
-                body:JSON.stringify({url:link}),
-              });
-              const txt=await r.text();
-              console.log('HOSTED_HTTP',r.status,'BODY',txt.slice(0,2000));
-            } catch(e) { console.log('HOSTED_ERR',e?.stack||e); }
-          }
-
-          await ssstik();
-          await lovetik();
-          await hosted();
           NODE
-      - run: echo alternate-resolver-diagnostic-v1
+      - run: echo tiktok-resolution-probe-v1
