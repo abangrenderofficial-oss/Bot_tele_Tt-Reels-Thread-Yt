@@ -31,23 +31,19 @@ const TT_SLIDE_SPLIT = 'ttslide:split:v2';
 const TT_SLIDE_VIDEO = 'ttslide:video:v2';
 const MEDIA_STATUS_HQ = 'media:status:v2';
 
+// OWNER LOCK: Keep this /start and /help copy unchanged unless the owner explicitly requests an edit.
 const START_TEXT = [
   '📥 Social Downloader Bot',
   '',
-  'Hantar link TikTok, Instagram, Threads, X/Twitter atau YouTube.',
-  'Bot akan terus hantar video high quality seperti biasa.',
+  'Hantar link public daripada:',
+  '• TikTok',
+  '• Instagram Reels / Post',
+  '• Threads',
+  '• YouTube / Shorts /unlisted',
   '',
-  'Di bawah video ada butang 📱 Status HQ.',
-  'Tekan butang itu jika mahu versi khas WhatsApp Status: satu fail sahaja, H.264/AAC, ratio asal kekal dan bitrate disesuaikan supaya lebih tahan compression Status.',
+  'Bot akan cuba hantar media terus dalam chat. Tekan button Status HQ jika anda ingin share video di status tanpa pecah.',
   '',
-  'Untuk sambung bot ke group:',
-  '1. Invite bot ke group.',
-  '2. Pastikan bot boleh send media/message.',
-  '3. Admin group taip /connect.',
-  'Selepas connect, setiap video yang bot hantar kepada user akan dicopy terus ke group bersama username user. Tiada Supabase digunakan.',
-  '',
-  'YouTube public/unlisted yang boleh dibuka dengan link disokong.',
-  'Gunakan hanya untuk media yang anda miliki atau dibenarkan untuk dimuat turun.',
+  'Status HQ akan ambil masa sedikit lama utk compress video ▶️',
 ].join('\n');
 
 function json(res, status, body) {
