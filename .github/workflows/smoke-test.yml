@@ -22,6 +22,7 @@ jobs:
           import { readFile } from 'node:fs/promises';
 
           const api = await readFile('api/telegram.js', 'utf8');
+          const downloader = await readFile('src/downloader.js', 'utf8');
           const start = api.indexOf('async function processLiveWallpaperButton(callbackQuery, baseUrl) {');
           const end = api.indexOf("async function processStandardDownload(chatId, url, platform, baseUrl, mirrorGroupId = '', from = {}, sourceMessage = null, jobFence = null) {", start);
           if (start < 0 || end < 0) throw new Error('Live Wallpaper callback function not found after postinstall.');
@@ -48,18 +49,32 @@ jobs:
           }
 
           const recoveryRequired = [
-            "from '@vercel/functions'",
             "from '../src/recovery.js'",
             "from '../src/tiktok-rescue.js'",
             "command === '/menu'",
             "command === '/reset'",
             "command === '/resetadmin'",
-            'waitUntil(runWebhookUpdate(update, context)',
-            'prepareTikTokTelegramRescue(url, configuredUploadLimit())',
-            "recovery: 'fast-ack-v1'",
+            'await runWebhookUpdate(update, context);',
+            'const rescueSourceUrl = media?.canonicalUrl || url;',
+            'prepareTikTokTelegramRescue(rescueSourceUrl, configuredUploadLimit())',
+            "recovery: 'sync-recovery-v2'",
           ];
           for (const marker of recoveryRequired) {
             if (!api.includes(marker)) throw new Error(`Recovery runtime marker missing: ${marker}`);
+          }
+          if (api.includes('waitUntil(') || api.includes("from '@vercel/functions'")) {
+            throw new Error('Fast-ACK/background webhook regression detected.');
+          }
+
+          const tiktokRequired = [
+            'const TIKTOK_BROWSER_USER_AGENT',
+            "Referer: canonicalUrl || 'https://www.tiktok.com/'",
+            'sourceUrl: canonicalUrl',
+            'headers: tiktokCdnHeaders',
+            'canonicalUrl,',
+          ];
+          for (const marker of tiktokRequired) {
+            if (!downloader.includes(marker)) throw new Error(`TikTok delivery marker missing: ${marker}`);
           }
 
           const menuStart = api.indexOf('function commandMenuText(userId) {');
@@ -82,7 +97,7 @@ jobs:
           if (!workflow.includes('runs-on: macos-15')) throw new Error('macOS Live Photo runner missing.');
           if (!workflow.includes('run: python scripts/apple_live_worker.py')) throw new Error('Native Apple Live Photo worker command missing.');
 
-          console.log('Native Apple Live Photo + recovery + owner menu runtime routing: OK');
+          console.log('Native Apple Live Photo + sync recovery + TikTok CDN rescue v2 + owner menu runtime routing: OK');
           NODE
       - name: Resolver smoke test
         run: node scripts/smoke-test.mjs
