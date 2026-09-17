@@ -230,10 +230,11 @@ export async function prepareSocialVideoTelegramUpload(item, maxBytes, options =
     try {
       downloaded = await downloadToFile(item, inputPath);
     } catch (directError) {
-      if (!options.sourceUrl) throw directError;
+      const fallbackSourceUrl = options.sourceUrl || item.sourceUrl || '';
+      if (!fallbackSourceUrl) throw directError;
       console.warn('Direct social media fetch failed; falling back to yt-dlp:', directError?.code, directError?.message);
       await rm(inputPath, { force: true }).catch(() => {});
-      downloaded = await downloadSourceWithYtDlp(options.sourceUrl, `${base}-ytdlp`);
+      downloaded = await downloadSourceWithYtDlp(fallbackSourceUrl, `${base}-ytdlp`);
       inputPath = downloaded.filePath;
       allPaths.push(inputPath);
     }
