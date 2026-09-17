@@ -57,7 +57,10 @@ func stillImageTimeItem() -> AVMetadataItem {
     let item = AVMutableMetadataItem()
     item.key = "com.apple.quicktime.still-image-time" as NSString
     item.keySpace = AVMetadataKeySpace(rawValue: "mdta")
-    item.value = NSNumber(value: Int8(0))
+
+    // Real Apple Live Photo MOV files use 0xFF / -1 as the payload. The actual
+    // still frame position is carried by this timed metadata sample's PTS.
+    item.value = NSNumber(value: Int8(-1))
     item.dataType = "com.apple.metadata.datatype.int8"
     return item
 }
@@ -107,6 +110,8 @@ func pairMovie(inputURL: URL, outputURL: URL, identifier: String) throws {
     reader.add(videoOutput)
 
     let writer = try AVAssetWriter(outputURL: outputURL, fileType: .mov)
+    writer.movieTimeScale = 600
+
     let videoInput = AVAssetWriterInput(
         mediaType: .video,
         outputSettings: nil,
@@ -121,8 +126,21 @@ func pairMovie(inputURL: URL, outputURL: URL, identifier: String) throws {
     // video-only avoids AVAssetWriter back-pressure/deadlocks when compressed
     // video and audio are copied sequentially on short ephemeral jobs.
     let metadataAdaptor = try stillImageTimeAdaptor()
-    try require(writer.canAdd(metadataAdaptor.assetWriterInput), "Could not add still-image-time writer input.")
-    writer.add(metadataAdaptor.assetWriterInput)
+    let metadataInput = metadataAdaptor.assetWriterInput
+    try require(writer.canAdd(metadataInput), "Could not add still-image-time writer input.")
+    writer.add(metadataInput)
+
+    // This is the structural difference between an asset-level metadata track
+    // and a metadata track that explicitly describes the video track. iOS Lock
+    // Screen eligibility is stricter than Photos Live Photo recognition, so keep
+    // the timed metadata associated with the video rather than the movie as a whole.
+    let metadataReferent = AVAssetTrack.AssociationType.metadataReferent.rawValue
+    try require(
+        metadataInput.canAddTrackAssociation(withTrackOf: videoInput, type: metadataReferent),
+        "Could not associate Live Photo metadata track with video track."
+    )
+    metadataInput.addTrackAssociation(withTrackOf: videoInput, type: metadataReferent)
+
     writer.metadata = [contentIdentifierMetadata(identifier)]
 
     try require(writer.startWriting(), "AVAssetWriter could not start: \(writer.error?.localizedDescription ?? "unknown error")")
@@ -131,15 +149,18 @@ func pairMovie(inputURL: URL, outputURL: URL, identifier: String) throws {
 
     let durationSeconds = max(0.1, CMTimeGetSeconds(asset.duration))
     let stillSeconds = min(max(0.05, durationSeconds * 0.5), max(0.05, durationSeconds - 0.05))
-    let fps = videoTrack.nominalFrameRate > 0 ? Double(videoTrack.nominalFrameRate) : 30.0
-    let stillTime = CMTime(seconds: stillSeconds, preferredTimescale: 60_000)
-    let frameDuration = CMTime(seconds: 1.0 / fps, preferredTimescale: 60_000)
+
+    // Match the shape of recent iPhone Live Photo files more closely: a 600 Hz
+    // metadata timeline with one one-tick sample. The sample payload is -1; its
+    // presentation timestamp is the actual still-image position.
+    let stillTime = CMTime(seconds: stillSeconds, preferredTimescale: 600)
+    let metadataTick = CMTime(value: 1, timescale: 600)
     let metadataGroup = AVTimedMetadataGroup(
         items: [stillImageTimeItem()],
-        timeRange: CMTimeRange(start: stillTime, duration: frameDuration)
+        timeRange: CMTimeRange(start: stillTime, duration: metadataTick)
     )
     try require(metadataAdaptor.append(metadataGroup), "Could not append still-image-time metadata sample.")
-    metadataAdaptor.assetWriterInput.markAsFinished()
+    metadataInput.markAsFinished()
 
     var videoFinished = false
     while !videoFinished {
@@ -186,15 +207,15 @@ func movieIdentifier(_ asset: AVAsset) -> String? {
     return nil
 }
 
-func movieHasStillImageTime(_ asset: AVAsset) -> Bool {
+func stillImageMetadataInfo(_ asset: AVAsset) -> (found: Bool, payload: Int, time: Double, duration: Double) {
     guard let metadataTrack = asset.tracks(withMediaType: .metadata).first,
           let reader = try? AVAssetReader(asset: asset) else {
-        return false
+        return (false, 0, 0, 0)
     }
     let output = AVAssetReaderTrackOutput(track: metadataTrack, outputSettings: nil)
-    guard reader.canAdd(output) else { return false }
+    guard reader.canAdd(output) else { return (false, 0, 0, 0) }
     reader.add(output)
-    guard reader.startReading() else { return false }
+    guard reader.startReading() else { return (false, 0, 0, 0) }
 
     while let sample = output.copyNextSampleBuffer() {
         guard CMSampleBufferGetNumSamples(sample) > 0,
@@ -202,18 +223,47 @@ func movieHasStillImageTime(_ asset: AVAsset) -> Bool {
         for item in group.items {
             if item.key as? String == "com.apple.quicktime.still-image-time",
                item.keySpace?.rawValue == "mdta" {
-                return true
+                return (
+                    true,
+                    item.numberValue?.intValue ?? 0,
+                    CMTimeGetSeconds(group.timeRange.start),
+                    CMTimeGetSeconds(group.timeRange.duration)
+                )
             }
         }
     }
-    return false
+    return (false, 0, 0, 0)
+}
+
+func metadataTrackReferencesVideo(_ asset: AVAsset) -> Bool {
+    guard let metadataTrack = asset.tracks(withMediaType: .metadata).first,
+          let videoTrack = asset.tracks(withMediaType: .video).first else {
+        return false
+    }
+
+    let associated = metadataTrack.associatedTracks(ofType: .metadataReferent)
+    return associated.contains { $0.trackID == videoTrack.trackID }
 }
 
 func verifyPair(photoURL: URL, movieURL: URL, expectedIdentifier: String) throws {
     try require(jpegIdentifier(photoURL) == expectedIdentifier, "Paired JPEG MakerApple[17] identifier verification failed.")
     let asset = AVURLAsset(url: movieURL)
     try require(movieIdentifier(asset) == expectedIdentifier, "Paired MOV content identifier verification failed.")
-    try require(movieHasStillImageTime(asset), "Paired MOV still-image-time metadata verification failed.")
+
+    let still = stillImageMetadataInfo(asset)
+    try require(still.found, "Paired MOV still-image-time metadata verification failed.")
+    try require(still.payload == -1, "Paired MOV still-image-time payload is not Apple-style -1.")
+    try require(still.duration > 0 && still.duration <= (1.0 / 30.0), "Paired MOV still-image-time sample is too long.")
+    try require(metadataTrackReferencesVideo(asset), "Paired MOV metadata track is not associated with the video track.")
+
+    print(
+        String(
+            format: "APPLE_LIVE_PHOTO_STRUCTURE still=%.4fs metadata_sample=%.6fs referent=video payload=%d",
+            still.time,
+            still.duration,
+            still.payload
+        )
+    )
 }
 
 func main() throws {
