@@ -1,0 +1,19 @@
+name: Validate direct candidate first
+on:
+  push:
+    branches: [fix/railway-ffmpeg-memory]
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm install --no-audit --no-fund
+      - run: npm run check
+      - name: Verify runtime markers
+        run: |
+          grep -q "allowCompression: false" api/telegram.js
+          grep -q "SOCIAL_COMPRESS_THREADS" src/social-video.js
+          grep -q "veryfast" src/social-video.js
