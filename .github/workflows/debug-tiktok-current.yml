@@ -14,36 +14,24 @@ jobs:
         with:
           node-version: '22'
       - run: npm install --no-audit --no-fund
-      - name: Test multiple TikTok resolvers on reported failing URL
+      - name: Test TikTok short-link resolution paths
         env:
           TEST_URL: https://vt.tiktok.com/ZSqsKvFLE
         run: |
           node --input-type=module <<'NODE'
           const input = process.env.TEST_URL;
-          async function probe(label, url) {
+          async function get(label,url,headers={}) {
             try {
-              const x = await fetch(url,{headers:{'User-Agent':'Mozilla/5.0','Range':'bytes=0-1023'},redirect:'follow',signal:AbortSignal.timeout(20000)});
-              const b = await x.arrayBuffer();
-              console.log(label, 'status', x.status, 'host', new URL(x.url).host, 'type', x.headers.get('content-type'), 'len', x.headers.get('content-length'), 'bytes', b.byteLength);
-            } catch(e) { console.log(label,'ERR',e.name,e.message); }
+              const r=await fetch(url,{headers:{'User-Agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/140.0 Safari/537.36',Accept:'application/json,text/html;q=0.9,*/*;q=0.8',...headers},redirect:'follow',signal:AbortSignal.timeout(20000)});
+              const text=await r.text();
+              console.log(label,'status',r.status,'final',r.url,'body',text.slice(0,1800));
+              return {r,text};
+            } catch(e){console.log(label,'ERR',e.name,e.message);return null;}
           }
-
-          const tikwm = new URL('https://www.tikwm.com/api/');
-          tikwm.searchParams.set('url', input);
-          tikwm.searchParams.set('hd', '1');
-          const tr = await fetch(tikwm,{headers:{Accept:'application/json','User-Agent':'Mozilla/5.0'}});
-          const tp = await tr.json().catch(()=>null);
-          console.log('TikWM', tr.status, tp?.code, tp?.msg || '', tp?.data?.id || '');
-          for (const [i,v] of [tp?.data?.hdplay,tp?.data?.play].filter(Boolean).entries()) await probe('tikwm-candidate-'+i,new URL(v,'https://www.tikwm.com').toString());
-
-          const alt = new URL('https://tdownv4.sl-bjs.workers.dev/');
-          alt.searchParams.set('down', input);
-          const ar = await fetch(alt,{headers:{Accept:'application/json','User-Agent':'Mozilla/5.0'},signal:AbortSignal.timeout(20000)});
-          const text = await ar.text();
-          console.log('ALT status', ar.status, 'body', text.slice(0,1200));
-          let ap=null; try{ap=JSON.parse(text)}catch{}
-          const download = ap?.download_url || ap?.video || ap?.data?.play || ap?.data?.hdplay || '';
-          if (download) await probe('alt-download',download);
+          await get('SHORT',input);
+          const oe=new URL('https://www.tiktok.com/oembed'); oe.searchParams.set('url',input); await get('OEMBED',oe);
+          const tikwm=new URL('https://www.tikwm.com/api/'); tikwm.searchParams.set('url',input); tikwm.searchParams.set('hd','1'); await get('TIKWM',tikwm);
+          const alt=new URL('https://tdownv4.sl-bjs.workers.dev/'); alt.searchParams.set('down',input); await get('ALT',alt);
       - name: Test current yt-dlp rescue
         continue-on-error: true
         env:
@@ -51,12 +39,6 @@ jobs:
         run: |
           node --input-type=module <<'NODE'
           import { prepareTikTokTelegramRescue } from './src/tiktok-rescue.js';
-          try {
-            const result = await prepareTikTokTelegramRescue(process.env.TEST_URL, 49 * 1024 * 1024);
-            console.log('RESCUE_OK', {size: result.size, compressed: result.compressed});
-            await result.cleanup();
-          } catch (error) {
-            console.error('RESCUE_FAIL', {code: error?.code, message: error?.message});
-            process.exitCode = 1;
-          }
+          try { const r=await prepareTikTokTelegramRescue(process.env.TEST_URL,49*1024*1024); console.log('RESCUE_OK',{size:r.size,compressed:r.compressed}); await r.cleanup(); }
+          catch(e){ console.error('RESCUE_FAIL',{code:e?.code,message:e?.message}); process.exitCode=1; }
           NODE
