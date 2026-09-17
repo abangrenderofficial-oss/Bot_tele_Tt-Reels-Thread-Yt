@@ -14,20 +14,49 @@ jobs:
         with:
           node-version: '22'
       - run: npm install --no-audit --no-fund
-      - name: Test TikTok rescue on reported failing URL
+      - name: Inspect TikWM candidates and direct fetch
+        env:
+          TEST_URL: https://vt.tiktok.com/ZSqsKvFLE
+        run: |
+          node --input-type=module <<'NODE'
+          const input = process.env.TEST_URL;
+          const api = new URL('https://www.tikwm.com/api/');
+          api.searchParams.set('url', input);
+          api.searchParams.set('hd', '1');
+          const r = await fetch(api, {headers:{Accept:'application/json','User-Agent':'Mozilla/5.0'}});
+          console.log('TikWM API', r.status);
+          const p = await r.json();
+          console.log('TikWM code', p?.code, 'id', p?.data?.id, 'author', p?.data?.author?.unique_id, 'title', p?.data?.title);
+          const candidates = [p?.data?.hdplay, p?.data?.play].filter(Boolean).map((v)=>new URL(v,'https://www.tikwm.com').toString());
+          for (const url of candidates) {
+            console.log('candidate', new URL(url).host, url.slice(0,180));
+            for (const mode of ['plain','browser']) {
+              const headers = mode === 'browser' ? {
+                'User-Agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/140.0 Safari/537.36',
+                'Referer':'https://www.tiktok.com/',
+                'Accept':'video/webm,video/mp4,video/*;q=0.9,*/*;q=0.8',
+                'Range':'bytes=0-1023'
+              } : {'Range':'bytes=0-1023'};
+              try {
+                const x = await fetch(url,{headers,redirect:'follow',signal:AbortSignal.timeout(20000)});
+                const b = await x.arrayBuffer();
+                console.log(mode, 'status', x.status, 'final', x.url.slice(0,140), 'type', x.headers.get('content-type'), 'len', x.headers.get('content-length'), 'bytes', b.byteLength);
+              } catch(e) { console.log(mode,'ERR',e.name,e.message); }
+            }
+          }
+      - name: Test current yt-dlp rescue
+        continue-on-error: true
         env:
           TEST_URL: https://vt.tiktok.com/ZSqsKvFLE
         run: |
           node --input-type=module <<'NODE'
           import { prepareTikTokTelegramRescue } from './src/tiktok-rescue.js';
-          const url = process.env.TEST_URL;
-          console.log('Testing URL:', url);
           try {
-            const result = await prepareTikTokTelegramRescue(url, 49 * 1024 * 1024);
-            console.log('RESCUE_OK', {size: result.size, compressed: result.compressed, filePath: result.filePath});
+            const result = await prepareTikTokTelegramRescue(process.env.TEST_URL, 49 * 1024 * 1024);
+            console.log('RESCUE_OK', {size: result.size, compressed: result.compressed});
             await result.cleanup();
           } catch (error) {
-            console.error('RESCUE_FAIL', {code: error?.code, message: error?.message, stack: error?.stack});
+            console.error('RESCUE_FAIL', {code: error?.code, message: error?.message});
             process.exitCode = 1;
           }
           NODE
