@@ -53,8 +53,10 @@ jobs:
             'waitUntil(runWebhookUpdate(update, context)',
             "recovery: 'fast-ack-v1'",
             '📥 Social Downloader Bot',
-            'Bot akan cuba hantar media terus dalam chat. Tekan button Status HQ jika anda ingin share video di status tanpa pecah.',
-            'Status HQ akan ambil masa sedikit lama utk compress video ▶️',
+            'Bot akan cuba hantar semula media dalam chat dan user boleh download.',
+            'Boleh juga upload media video atau photo dari gallery untuk:',
+            '• 📱 Status HQ',
+            '• 🍎 Live Wallpaper iPhone',
           ];
           for (const marker of required) {
             if (!api.includes(marker)) throw new Error(`runtime marker missing: ${marker}`);
