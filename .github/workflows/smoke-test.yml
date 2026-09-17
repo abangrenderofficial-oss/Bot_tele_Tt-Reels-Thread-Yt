@@ -51,6 +51,7 @@ jobs:
             "from '@vercel/functions'",
             "from '../src/recovery.js'",
             "from '../src/tiktok-rescue.js'",
+            "command === '/menu'",
             "command === '/reset'",
             "command === '/resetadmin'",
             'waitUntil(runWebhookUpdate(update, context)',
@@ -61,11 +62,27 @@ jobs:
             if (!api.includes(marker)) throw new Error(`Recovery runtime marker missing: ${marker}`);
           }
 
+          const menuStart = api.indexOf('function commandMenuText(userId) {');
+          const menuEnd = api.indexOf('async function runWebhookUpdate(update, context) {', menuStart);
+          if (menuStart < 0 || menuEnd < 0) throw new Error('Owner-aware menu function missing.');
+          const menuSource = api.slice(menuStart, menuEnd);
+          const makeMenu = new Function('isResetAdmin', `${menuSource}; return commandMenuText;`);
+          const userMenu = makeMenu(() => false)(999);
+          const ownerMenu = makeMenu(() => true)(999);
+
+          for (const command of ['/start', '/help', '/menu', '/status <link>', '/reset']) {
+            if (!userMenu.includes(command)) throw new Error(`Public menu missing ${command}`);
+          }
+          for (const command of ['/resetadmin', '/connect', '/disconnect']) {
+            if (userMenu.includes(command)) throw new Error(`Public menu leaked owner command ${command}`);
+            if (!ownerMenu.includes(command)) throw new Error(`Owner menu missing ${command}`);
+          }
+
           const workflow = await readFile('.github/workflows/heavy-status-hq.yml', 'utf8');
           if (!workflow.includes('runs-on: macos-15')) throw new Error('macOS Live Photo runner missing.');
           if (!workflow.includes('run: python scripts/apple_live_worker.py')) throw new Error('Native Apple Live Photo worker command missing.');
 
-          console.log('Native Apple Live Photo + recovery runtime routing: OK');
+          console.log('Native Apple Live Photo + recovery + owner menu runtime routing: OK');
           NODE
       - name: Resolver smoke test
         run: node scripts/smoke-test.mjs
