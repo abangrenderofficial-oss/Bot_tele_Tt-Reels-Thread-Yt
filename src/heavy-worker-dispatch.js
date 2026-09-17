@@ -12,8 +12,8 @@ export function heavyWorkerConfigured() {
 }
 
 export function heavyVideoLimitBytes() {
-  const configuredMb = Number(process.env.HEAVY_VIDEO_MAX_MB || 250);
-  const mb = Number.isFinite(configuredMb) && configuredMb > 0 ? Math.min(configuredMb, 250) : 250;
+  const configuredMb = Number(process.env.HEAVY_VIDEO_MAX_MB || 500);
+  const mb = Number.isFinite(configuredMb) && configuredMb > 0 ? Math.min(configuredMb, 500) : 500;
   return Math.floor(mb * MB);
 }
 
