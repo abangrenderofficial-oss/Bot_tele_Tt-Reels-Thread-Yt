@@ -33,17 +33,50 @@ jobs:
       - name: Build native Apple pairer
         run: swiftc scripts/apple_live_photo_pair.swift -o /tmp/apple-live-pair
 
-      - name: Generate synthetic Live Photo source
+      - name: Generate wallpaper-profile motion
         shell: bash
         run: |
+          # Start from landscape on purpose so the test exercises the dedicated
+          # portrait conversion used only by the Live Wallpaper worker.
           ffmpeg -y -hide_banner -loglevel error \
-            -f lavfi -i 'testsrc2=size=720x1280:rate=30' \
-            -f lavfi -i 'sine=frequency=440:sample_rate=44100' \
-            -t 3 \
-            -c:v libx264 -pix_fmt yuv420p -b:v 2500k \
-            -c:a aac -b:a 96k \
-            -movflags +faststart -f mov /tmp/raw.mov
-          ffmpeg -y -hide_banner -loglevel error -ss 1.5 -i /tmp/raw.mov -frames:v 1 -q:v 2 /tmp/raw.jpg
+            -f lavfi -i 'testsrc2=size=1280x720:rate=60' \
+            -t 4 \
+            -c:v libx264 -pix_fmt yuv420p -b:v 3000k \
+            /tmp/source.mp4
+
+          ffmpeg -y -hide_banner -loglevel error \
+            -ss 0.12 -i /tmp/source.mp4 -t 1.5 \
+            -map 0:v:0 -an \
+            -vf 'scale=1080:1920:force_original_aspect_ratio=increase:flags=lanczos,crop=1080:1920,setsar=1,fps=30,setpts=PTS-STARTPTS' \
+            -c:v libx264 -preset medium -pix_fmt yuv420p \
+            -profile:v high -level:v 4.0 \
+            -b:v 6500k -maxrate 7150k -bufsize 14300k \
+            -g 30 -keyint_min 30 -sc_threshold 0 \
+            -movflags +faststart -map_metadata -1 \
+            -video_track_timescale 60000 -f mov /tmp/raw.mov
+
+          ffmpeg -y -hide_banner -loglevel error \
+            -ss 0.75 -i /tmp/raw.mov -frames:v 1 -q:v 2 /tmp/raw.jpg
+
+      - name: Validate wallpaper media profile
+        shell: bash
+        run: |
+          read width height fps duration <<<"$(ffprobe -v error -select_streams v:0 \
+            -show_entries stream=width,height,r_frame_rate:format=duration \
+            -of default=noprint_wrappers=1:nokey=1 /tmp/raw.mov | tr '\n' ' ')"
+          echo "width=$width height=$height fps=$fps duration=$duration"
+          test "$width" = "1080"
+          test "$height" = "1920"
+          test "$fps" = "30/1"
+          python3 - <<'PY'
+          import json, subprocess
+          payload = json.loads(subprocess.check_output([
+              'ffprobe', '-v', 'error', '-show_entries', 'format=duration',
+              '-of', 'json', '/tmp/raw.mov'
+          ], text=True))
+          duration = float(payload['format']['duration'])
+          assert 1.35 <= duration <= 1.60, duration
+          PY
 
       - name: Pair and verify Apple Live Photo
         run: |
