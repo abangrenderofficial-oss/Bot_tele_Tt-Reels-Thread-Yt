@@ -7,8 +7,8 @@
     "node": ">=22"
   },
   "scripts": {
-    "postinstall": "node scripts/install-ytdlp.mjs && node scripts/patch-runtime.mjs && node scripts/patch-upload-mirror.mjs && node scripts/patch-start-copy.mjs",
-    "check": "node --check api/telegram.js && node --check api/health.js && node --check src/downloader.js && node --check src/telegram.js && node --check src/threads.js && node --check src/twitter.js && node --check src/social-video.js && node --check src/youtube-upload.js && node --check src/status-hq.js && node --check src/status-image-hq.js && node --check src/tiktok-slideshow.js && node --check src/live-wallpaper.js && node --check src/live-photo-telegram.js && node --check scripts/patch-upload-mirror.mjs && node --check scripts/patch-start-copy.mjs"
+    "postinstall": "node scripts/install-ytdlp.mjs && node scripts/patch-runtime.mjs && node scripts/patch-upload-mirror.mjs && node scripts/patch-start-copy.mjs && node scripts/patch-status-preserve.mjs",
+    "check": "node --check api/telegram.js && node --check api/health.js && node --check src/downloader.js && node --check src/telegram.js && node --check src/threads.js && node --check src/twitter.js && node --check src/social-video.js && node --check src/youtube-upload.js && node --check src/status-hq.js && node --check src/status-image-hq.js && node --check src/tiktok-slideshow.js && node --check src/live-wallpaper.js && node --check src/live-photo-telegram.js && node --check scripts/patch-upload-mirror.mjs && node --check scripts/patch-start-copy.mjs && node --check scripts/patch-status-preserve.mjs"
   },
   "dependencies": {
     "ffmpeg-static": "^5.2.0"
