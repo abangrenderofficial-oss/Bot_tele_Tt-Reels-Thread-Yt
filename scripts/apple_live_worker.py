@@ -1,6 +1,7 @@
 import json
 import math
 import os
+import re
 import subprocess
 import tempfile
 from pathlib import Path
@@ -20,6 +21,17 @@ SOURCE_MESSAGE_ID = int(os.environ.get('HEAVY_SOURCE_MESSAGE_ID', '0') or 0)
 MAX_INPUT_MB = int(os.environ.get('HEAVY_VIDEO_MAX_MB', '500') or 500)
 MAX_INPUT_BYTES = MAX_INPUT_MB * MB
 BOT_API_BASE = os.environ.get('TELEGRAM_API_BASE_URL', 'https://api.telegram.org').rstrip('/')
+
+# This worker is intentionally isolated from Status HQ and the normal downloader.
+# It targets iOS Lock Screen compatibility rather than Telegram's generic 10-second
+# Live Photo allowance. Keep the motion short and predictable.
+WALLPAPER_DURATION = max(1.0, min(2.0, float(os.environ.get('APPLE_WALLPAPER_DURATION', '1.5') or 1.5)))
+SCENE_ANALYZE_SECONDS = max(
+    WALLPAPER_DURATION,
+    min(10.0, float(os.environ.get('APPLE_WALLPAPER_ANALYZE_SECONDS', '6') or 6)),
+)
+SCENE_THRESHOLD = max(0.15, min(0.80, float(os.environ.get('APPLE_WALLPAPER_SCENE_THRESHOLD', '0.35') or 0.35)))
+MIN_WALLPAPER_SOURCE_SECONDS = 1.0
 
 
 def require_config():
@@ -60,7 +72,7 @@ def progress_text(percent):
     value = max(1, min(100, int(round(percent))))
     filled = 10 if value >= 100 else min(9, value // 10)
     bar = '▰' * filled + '▱' * (10 - filled)
-    return f'🍎 Apple Live Photo sedang diproses...\n{bar} {value}%'
+    return f'🍎 Live Wallpaper iPhone sedang diproses...\n{bar} {value}%'
 
 
 def set_progress(percent):
@@ -139,7 +151,9 @@ def probe_video(path):
     width = int(stream.get('width') or 0)
     height = int(stream.get('height') or 0)
     if duration <= 0 or width <= 0 or height <= 0:
-        raise RuntimeError('Tak dapat baca metadata video untuk Apple Live Photo.')
+        raise RuntimeError('Tak dapat baca metadata video untuk Live Wallpaper iPhone.')
+    if duration < MIN_WALLPAPER_SOURCE_SECONDS:
+        raise RuntimeError('Video terlalu pendek. Live Wallpaper perlukan sekurang-kurangnya 1 saat video.')
     return {'duration': duration, 'width': width, 'height': height}
 
 
@@ -148,39 +162,126 @@ def even_floor(value):
 
 
 def target_dimensions(width, height):
-    max_w, max_h = ((1920, 1080) if width > height else (1080, 1920))
+    # Native portrait clips keep their original aspect ratio. Landscape / nearly
+    # square clips are converted into a 9:16 portrait canvas because otherwise
+    # iOS has to perform an aggressive wallpaper crop itself.
+    ratio = width / max(1, height)
+    if ratio > 0.78:
+        return 1080, 1920, True
+
+    max_w, max_h = 1080, 1920
     scale = min(1.0, max_w / width, max_h / height)
-    return even_floor(width * scale), even_floor(height * scale)
+    return even_floor(width * scale), even_floor(height * scale), False
+
+
+def detect_scene_cuts(source, probe):
+    scan_seconds = min(probe['duration'], SCENE_ANALYZE_SECONDS)
+    if scan_seconds <= WALLPAPER_DURATION + 0.15:
+        return []
+
+    filter_value = f'select=gt(scene\\,{SCENE_THRESHOLD:.3f}),showinfo'
+    cmd = [
+        'ffmpeg', '-hide_banner', '-loglevel', 'info',
+        '-t', f'{scan_seconds:.3f}', '-i', str(source),
+        '-an', '-vf', filter_value, '-f', 'null', '-',
+    ]
+    print('$ ' + ' '.join(str(x) for x in cmd), flush=True)
+    try:
+        result = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=120,
+        )
+    except Exception as exc:
+        print(f'scene scan skipped: {exc}', flush=True)
+        return []
+
+    if result.returncode != 0:
+        print(f'scene scan returned {result.returncode}; using fallback clip window', flush=True)
+        return []
+
+    values = []
+    for match in re.finditer(r'pts_time:([0-9]+(?:\.[0-9]+)?)', result.stderr or ''):
+        value = float(match.group(1))
+        if 0.05 < value < scan_seconds - 0.05:
+            values.append(value)
+    return sorted(set(values))
+
+
+def choose_motion_window(source, probe):
+    duration = min(WALLPAPER_DURATION, probe['duration'])
+    max_start = max(0.0, probe['duration'] - duration)
+    if max_start <= 0.001:
+        return 0.0, duration
+
+    scan_end = min(probe['duration'], SCENE_ANALYZE_SECONDS)
+    cuts = detect_scene_cuts(source, probe)
+    boundaries = [0.0] + [cut for cut in cuts if cut < scan_end] + [scan_end]
+    margin = 0.08
+
+    for left, right in zip(boundaries, boundaries[1:]):
+        safe_left = left + (margin if left > 0 else min(0.12, margin))
+        safe_right = right - margin
+        if safe_right - safe_left >= duration:
+            start = min(max_start, max(0.0, safe_left))
+            print(
+                f'wallpaper clip selected start={start:.3f}s duration={duration:.3f}s '
+                f'cuts={cuts[:12]}',
+                flush=True,
+            )
+            return start, duration
+
+    # Fallback: avoid a potentially blank/fade first frame while staying near the
+    # beginning so the result still resembles what the user selected.
+    start = min(max_start, 0.12)
+    print(
+        f'wallpaper clip fallback start={start:.3f}s duration={duration:.3f}s cuts={cuts[:12]}',
+        flush=True,
+    )
+    return start, duration
+
+
+def wallpaper_filter(probe):
+    width, height, needs_portrait_crop = target_dimensions(probe['width'], probe['height'])
+    if needs_portrait_crop:
+        return (
+            'scale=1080:1920:force_original_aspect_ratio=increase:flags=lanczos,'
+            'crop=1080:1920,setsar=1,fps=30,setpts=PTS-STARTPTS'
+        )
+    return f'scale={width}:{height}:flags=lanczos,setsar=1,fps=30,setpts=PTS-STARTPTS'
 
 
 def encode_motion_and_cover(source, raw_movie, raw_cover, probe):
-    duration = min(3.0, max(0.35, probe['duration']))
-    width, height = target_dimensions(probe['width'], probe['height'])
-    target_bytes = 7.2 * MB
-    audio_kbps = 96
-    total_kbps = int((target_bytes * 8 / duration / 1000) * 0.88)
-    video_kbps = max(1000, min(6000, total_kbps - audio_kbps - 120))
-    maxrate = max(video_kbps, int(video_kbps * 1.12))
-    bufsize = max(2400, maxrate * 2)
-    video_filter = f'scale={width}:{height}:flags=lanczos,setsar=1,fps=30'
+    clip_start, duration = choose_motion_window(source, probe)
+    target_bytes = 6.5 * MB
+    total_kbps = int((target_bytes * 8 / duration / 1000) * 0.85)
+    video_kbps = max(1800, min(6500, total_kbps - 120))
+    maxrate = max(video_kbps, int(video_kbps * 1.10))
+    bufsize = max(3000, maxrate * 2)
 
+    # Deliberately video-only. Apple Live Wallpaper does not need audio, and
+    # keeping this stream simple makes the native AVFoundation pairing safer.
     run(
         [
-            'ffmpeg', '-y', '-hide_banner', '-loglevel', 'error', '-i', str(source),
-            '-t', f'{duration:.3f}', '-map', '0:v:0', '-map', '0:a:0?',
-            '-vf', video_filter,
+            'ffmpeg', '-y', '-hide_banner', '-loglevel', 'error',
+            '-ss', f'{clip_start:.3f}', '-i', str(source),
+            '-t', f'{duration:.3f}', '-map', '0:v:0', '-an',
+            '-vf', wallpaper_filter(probe),
             '-c:v', 'libx264', '-preset', 'medium', '-pix_fmt', 'yuv420p',
-            '-profile:v', 'high', '-level:v', '4.1',
+            '-profile:v', 'high', '-level:v', '4.0',
             '-b:v', f'{video_kbps}k', '-maxrate', f'{maxrate}k', '-bufsize', f'{bufsize}k',
-            '-c:a', 'aac', '-b:a', f'{audio_kbps}k', '-ar', '44100', '-ac', '2',
-            '-movflags', '+faststart', '-map_metadata', '-1', '-f', 'mov', str(raw_movie),
+            '-g', '30', '-keyint_min', '30', '-sc_threshold', '0',
+            '-movflags', '+faststart', '-map_metadata', '-1',
+            '-video_track_timescale', '60000', '-f', 'mov', str(raw_movie),
         ],
         timeout=600,
     )
     if not raw_movie.exists() or raw_movie.stat().st_size <= 0:
-        raise RuntimeError('Apple Live Photo motion file tidak terhasil.')
+        raise RuntimeError('Live Wallpaper motion file tidak terhasil.')
     if raw_movie.stat().st_size > 9 * MB:
-        raise RuntimeError(f'Apple Live Photo motion terlalu besar: {raw_movie.stat().st_size / MB:.2f}MB.')
+        raise RuntimeError(f'Live Wallpaper motion terlalu besar: {raw_movie.stat().st_size / MB:.2f}MB.')
 
     still_at = max(0.0, duration * 0.5)
     run(
@@ -192,7 +293,9 @@ def encode_motion_and_cover(source, raw_movie, raw_cover, probe):
         timeout=120,
     )
     if not raw_cover.exists() or raw_cover.stat().st_size <= 0:
-        raise RuntimeError('Apple Live Photo cover tidak terhasil.')
+        raise RuntimeError('Live Wallpaper cover tidak terhasil.')
+
+    return {'clip_start': clip_start, 'duration': duration}
 
 
 def pair_apple_live_photo(raw_cover, raw_movie, paired_cover, paired_movie):
@@ -215,7 +318,7 @@ def send_live_photo(movie_path, photo_path):
             'sendLivePhoto',
             {
                 'chat_id': str(CHAT_ID),
-                'caption': 'Apple Live Photo dah siap 🍎\nSimpan ke Photos, kemudian cuba Use as Wallpaper.',
+                'caption': 'Live Wallpaper iPhone dah siap 🍎\nSimpan ke Photos, kemudian cuba Use as Wallpaper.',
             },
             {
                 'live_photo': ('live-wallpaper.mov', movie, 'video/quicktime'),
@@ -247,7 +350,11 @@ def download_source(path):
 
 def main():
     require_config()
-    print(f'apple live worker input={FILE_SIZE} chat={CHAT_ID}', flush=True)
+    print(
+        f'apple live worker input={FILE_SIZE} chat={CHAT_ID} '
+        f'wallpaper_duration={WALLPAPER_DURATION:.3f}s scene_threshold={SCENE_THRESHOLD:.3f}',
+        flush=True,
+    )
     with tempfile.TemporaryDirectory(prefix='abangrender-apple-live-') as temp_dir:
         temp = Path(temp_dir)
         source = temp / 'source-video.bin'
@@ -261,7 +368,8 @@ def main():
         print(f'probe={probe}', flush=True)
 
         set_progress(42)
-        encode_motion_and_cover(source, raw_movie, raw_cover, probe)
+        clip = encode_motion_and_cover(source, raw_movie, raw_cover, probe)
+        print(f'wallpaper_profile={clip}', flush=True)
         set_progress(68)
         pair_apple_live_photo(raw_cover, raw_movie, paired_cover, paired_movie)
         print(
@@ -272,7 +380,7 @@ def main():
         send_live_photo(paired_movie, paired_cover)
         set_progress(100)
         finish_progress()
-        print('apple live worker complete', flush=True)
+        print('apple live wallpaper worker complete', flush=True)
 
 
 if __name__ == '__main__':
@@ -280,5 +388,5 @@ if __name__ == '__main__':
         main()
     except Exception as exc:
         print(f'apple live worker failed: {type(exc).__name__}: {exc}', flush=True)
-        fail_progress('Apple Live Photo tak berjaya diproses. Cuba hantar video semula.')
+        fail_progress('Live Wallpaper iPhone tak berjaya diproses. Cuba hantar video semula.')
         raise
