@@ -1,0 +1,70 @@
+name: Recovery Branch Validation
+on:
+  push:
+    branches: [fix/recovery-reset-tiktok-rescue]
+  workflow_dispatch:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install and apply runtime patches
+        run: npm install --no-audit --no-fund
+      - name: Syntax check final runtime
+        run: npm run check
+      - name: Verify recovery behavior and preserved start copy
+        shell: bash
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile } from 'node:fs/promises';
+          import {
+            beginUpdate,
+            captureJobFence,
+            isJobFenceActive,
+            resetUserFence,
+          } from './src/recovery.js';
+
+          const now = Math.floor(Date.now() / 1000);
+          const update = { update_id: 910001, message: { date: now, message_id: 1, chat: { id: 10 }, from: { id: 20 }, text: 'https://www.tiktok.com/@x/video/1' } };
+          const first = beginUpdate(update);
+          if (!first.accept) throw new Error(`first update rejected: ${first.reason}`);
+          const duplicate = beginUpdate(update);
+          if (duplicate.accept || duplicate.reason !== 'duplicate_update') throw new Error('duplicate update guard failed');
+
+          const fence = captureJobFence({ ...update, update_id: 910002 });
+          if (!isJobFenceActive(fence)) throw new Error('new fence should be active');
+          resetUserFence({ ...update, update_id: 910003 });
+          if (isJobFenceActive(fence)) throw new Error('reset did not invalidate old user fence');
+
+          const stale = beginUpdate({ update_id: 910004, message: { date: now - 600, message_id: 2, chat: { id: 11 }, from: { id: 21 }, text: 'https://www.tiktok.com/@x/video/2' } });
+          if (stale.accept || stale.reason !== 'stale_update') throw new Error('stale update guard failed');
+
+          const api = await readFile('api/telegram.js', 'utf8');
+          const required = [
+            "from '@vercel/functions'",
+            "command === '/reset'",
+            "command === '/resetadmin'",
+            'prepareTikTokTelegramRescue(url, configuredUploadLimit())',
+            'waitUntil(runWebhookUpdate(update, context)',
+            "recovery: 'fast-ack-v1'",
+            '📥 Social Downloader Bot',
+            'Bot akan cuba hantar media terus dalam chat. Tekan button Status HQ jika anda ingin share video di status tanpa pecah.',
+            'Status HQ akan ambil masa sedikit lama utk compress video ▶️',
+          ];
+          for (const marker of required) {
+            if (!api.includes(marker)) throw new Error(`runtime marker missing: ${marker}`);
+          }
+
+          const liveStart = api.indexOf('async function processLiveWallpaperButton(callbackQuery, baseUrl) {');
+          const standardStart = api.indexOf("async function processStandardDownload(chatId, url, platform, baseUrl, mirrorGroupId = '', from = {}, sourceMessage = null, jobFence = null) {", liveStart);
+          if (liveStart < 0 || standardStart < 0) throw new Error('final runtime function boundaries missing');
+          const live = api.slice(liveStart, standardStart);
+          if (!live.includes('dispatchHeavyMediaJob({')) throw new Error('Live Wallpaper heavy-worker routing was damaged');
+
+          console.log('Recovery branch validation: OK');
+          NODE
