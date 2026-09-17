@@ -46,11 +46,11 @@ func pairJPEG(inputURL: URL, outputURL: URL, identifier: String) throws {
     }
 }
 
-func quickTimeMetadata(_ key: String, value: Any, dataType: String) -> AVMetadataItem {
+func quickTimeMetadata(_ key: String, value: (any NSCopying & NSObjectProtocol), dataType: String) -> AVMetadataItem {
     let item = AVMutableMetadataItem()
     item.key = key as NSString
     item.keySpace = AVMetadataKeySpace(rawValue: "mdta")
-    item.value = value as? NSCopying
+    item.value = value
     item.dataType = dataType
     return item
 }
