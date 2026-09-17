@@ -90,6 +90,72 @@ function statusButton() {
   };
 }
 
+function statusProgressText(percent) {
+  const value = Math.max(1, Math.min(100, Math.round(Number(percent) || 1)));
+  const filled = value >= 100 ? 10 : Math.min(9, Math.floor(value / 10));
+  const bar = `${'▰'.repeat(filled)}${'▱'.repeat(10 - filled)}`;
+  return `🔋 Status HQ sedang diproses...\n${bar} ${value}%`;
+}
+
+async function startStatusProgress(chatId) {
+  const progressMessage = await sendMessage(chatId, statusProgressText(1)).catch(() => null);
+  const messageId = progressMessage?.message_id;
+  if (!messageId) {
+    return {
+      complete: async () => {},
+      remove: async () => {},
+    };
+  }
+
+  let percent = 1;
+  let stopped = false;
+  let editChain = Promise.resolve();
+
+  const queueEdit = (nextPercent) => {
+    percent = Math.max(percent, Math.min(99, nextPercent));
+    const text = statusProgressText(percent);
+    editChain = editChain
+      .then(() => telegram('editMessageText', {
+        chat_id: chatId,
+        message_id: messageId,
+        text,
+      }))
+      .catch(() => {});
+    return editChain;
+  };
+
+  const timer = setInterval(() => {
+    if (stopped || percent >= 99) return;
+    const increment = percent < 35 ? 2 : 1;
+    queueEdit(Math.min(99, percent + increment));
+  }, 1200);
+  timer.unref?.();
+
+  return {
+    async complete() {
+      if (stopped) return;
+      stopped = true;
+      clearInterval(timer);
+      await editChain.catch(() => {});
+      percent = 100;
+      await telegram('editMessageText', {
+        chat_id: chatId,
+        message_id: messageId,
+        text: statusProgressText(100),
+      }).catch(() => {});
+    },
+    async remove() {
+      stopped = true;
+      clearInterval(timer);
+      await editChain.catch(() => {});
+      await telegram('deleteMessage', {
+        chat_id: chatId,
+        message_id: messageId,
+      }).catch(() => {});
+    },
+  };
+}
+
 function relayItem(baseUrl, item) {
   if (!baseUrl || !item?.url) return null;
   try {
@@ -143,7 +209,6 @@ async function mirrorVideoToGroup(sourceChatId, sentMessage, mirrorGroupId, from
       from_chat_id: sourceChatId,
       message_id: sentMessage.message_id,
       caption,
-      ...statusButton(),
     });
     return true;
   } catch (error) {
@@ -465,27 +530,29 @@ async function prepareStatusFromSourceUrl(url, platform) {
   return prepareWhatsAppStatusHQ({ sourceUrl: url, platform, video: best });
 }
 
-async function processStatusFromLink(chatId, url, platform, mirrorGroupId = '', from = {}) {
+async function processStatusFromLink(chatId, url, platform) {
   let prepared = null;
+  const progress = await startStatusProgress(chatId);
   try {
-    await sendMessage(chatId, '📱 Status HQ sedang disediakan… satu fail sahaja, ratio asal dikekalkan.');
     await sendChatAction(chatId, 'upload_video').catch(() => {});
     prepared = await prepareStatusFromSourceUrl(url, platform);
-    const sent = await sendVideoFileUpload(
+    await progress.complete();
+    await sendVideoFileUpload(
       chatId,
       prepared.filePath,
-      `📱 ${prepared.quality}\n✅ Satu fail • ratio asal kekal`,
+      'Video ni dah ready untuk upload ke status ✅',
     );
-    await mirrorVideoToGroup(chatId, sent, mirrorGroupId, from);
+    await progress.remove();
   } catch (error) {
     console.error('Status HQ from link failed:', error?.code, error?.message);
+    await progress.remove();
     await sendMessage(chatId, '❌ Status HQ tak dapat disiapkan untuk link ini. Cuba semula kemudian.').catch(() => {});
   } finally {
     if (prepared?.cleanup) await prepared.cleanup().catch(() => {});
   }
 }
 
-async function processStatusButton(callbackQuery, mirrorGroupId = '') {
+async function processStatusButton(callbackQuery) {
   if (String(callbackQuery?.data || '') !== MEDIA_STATUS_HQ) return false;
 
   const chatId = callbackQuery?.message?.chat?.id;
@@ -500,10 +567,10 @@ async function processStatusButton(callbackQuery, mirrorGroupId = '') {
     text: 'Status HQ sedang diproses…',
   }).catch(() => {});
   await disableChoiceButtons(callbackQuery);
-  await sendMessage(chatId, '📱 Sedang tukar video ini ke Status HQ… satu fail, ratio asal kekal.').catch(() => {});
   await sendChatAction(chatId, 'upload_video').catch(() => {});
 
   let prepared = null;
+  const progress = await startStatusProgress(chatId);
   try {
     if (!fileId) throw new Error('Video file_id missing from callback message.');
 
@@ -520,14 +587,16 @@ async function processStatusButton(callbackQuery, mirrorGroupId = '') {
       prepared = await prepareStatusFromSourceUrl(sourceUrl, sourcePlatform);
     }
 
-    const sent = await sendVideoFileUpload(
+    await progress.complete();
+    await sendVideoFileUpload(
       chatId,
       prepared.filePath,
-      `📱 ${prepared.quality}\n✅ Satu fail • ratio asal kekal`,
+      'Video ni dah ready untuk upload ke status ✅',
     );
-    await mirrorVideoToGroup(chatId, sent, mirrorGroupId, callbackQuery.from);
+    await progress.remove();
   } catch (error) {
     console.error('Status HQ button failed:', error?.code, error?.message);
+    await progress.remove();
     await sendMessage(chatId, '❌ Status HQ tak dapat disiapkan untuk video ini. Cuba hantar semula link dan tekan Status HQ sekali lagi.').catch(() => {});
   } finally {
     if (prepared?.cleanup) await prepared.cleanup().catch(() => {});
@@ -664,7 +733,7 @@ async function processMessage(message, context) {
   }
 
   if (statusMode) {
-    await processStatusFromLink(chatId, url, platform, context.mirrorGroupId, message.from);
+    await processStatusFromLink(chatId, url, platform);
     return;
   }
 
@@ -699,7 +768,7 @@ export default async function handler(req, res) {
 
     const callbackQuery = update?.callback_query;
     if (callbackQuery) {
-      if (await processStatusButton(callbackQuery, context.mirrorGroupId)) {
+      if (await processStatusButton(callbackQuery)) {
         return json(res, 200, { ok: true });
       }
       await processTikTokSlideshowChoice(callbackQuery, context.baseUrl, context.mirrorGroupId);
