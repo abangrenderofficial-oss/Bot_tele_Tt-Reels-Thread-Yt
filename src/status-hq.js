@@ -239,8 +239,17 @@ function chooseEncodePlan(probe) {
 }
 
 function statusVideoFilter(plan) {
+  const maxWidth = Math.max(2, Math.floor(Number(plan.maxWidth || 1080) / 2) * 2);
+  const maxHeight = Math.max(2, Math.floor(Number(plan.maxHeight || 1920) / 2) * 2);
+  const sar = 'if(gt(sar,0),sar,1)';
+  const fit = `min(${maxWidth}/(iw*${sar}),${maxHeight}/ih)`;
+
   return [
-    `scale=w=${plan.maxWidth}:h=${plan.maxHeight}:force_original_aspect_ratio=decrease:force_divisible_by=2:flags=${plan.scaleFlags || 'lanczos'}`,
+    // Convert the source display aspect ratio to square pixels instead of only
+    // preserving coded width/height. This prevents anamorphic/SAR videos from
+    // looking squeezed in Telegram or WhatsApp while still avoiding crop/pad.
+    `scale=w='max(2,trunc((iw*${sar})*${fit}/2)*2)':h='max(2,trunc(ih*${fit}/2)*2)':flags=${plan.scaleFlags || 'lanczos'}`,
+    'setsar=1',
     `fps=${plan.fps}`,
   ].join(',');
 }
@@ -276,6 +285,7 @@ async function encodeSingleStatusFile(inputPath, outputPath, plan, bitrateScale 
     '-b:a', `${plan.audioKbps}k`,
     '-brand', 'isom',
     '-movflags', '+faststart',
+    '-metadata:s:v:0', 'rotate=0',
     '-map_metadata', '-1',
     '-f', 'mp4',
     '-threads', String(plan.threads ?? 0),
