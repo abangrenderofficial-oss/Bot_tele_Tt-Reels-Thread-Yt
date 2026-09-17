@@ -21,19 +21,13 @@ const newCallbackSource = `function callbackSourceUrl(action, prefix, caption = 
 
 replaceRequired(oldCallbackSource, newCallbackSource, 'callback source decoder');
 
-// patch-heavy-worker replaces the full button handlers before this patch runs.
-// Replace only the video retrieval blocks so Gallery/image/heavy-worker routing stays untouched.
+// patch-heavy-worker owns the current Status HQ handler. Preserve its image/gallery/
+// heavy-worker logic and only replace the normal video retrieval block.
 const oldStatusVideoPath = `      try {\n        const telegramVideo = await getTelegramFileSource(fileId);\n        prepared = await prepareWhatsAppStatusHQ({ sourceUrl: '', platform: 'telegram', video: telegramVideo });\n      } catch (telegramFileError) {\n        console.warn('Status HQ Telegram-file path failed, trying source URL:', telegramFileError?.code, telegramFileError?.message);\n        if (!sourceUrl || !sourcePlatform) throw telegramFileError;\n        prepared = await prepareStatusFromSourceUrl(sourceUrl, sourcePlatform);\n      }`;
 
 const newStatusVideoPath = `      let sourceError = null;\n      if (sourceUrl && sourcePlatform) {\n        try {\n          // Downloader messages carry a compact source token. Re-fetch the public source\n          // instead of Telegram getFile, which refuses larger bot-hosted files.\n          prepared = await prepareStatusFromSourceUrl(sourceUrl, sourcePlatform);\n        } catch (error) {\n          sourceError = error;\n          console.warn('Status HQ source path failed, trying Telegram file:', error?.code, error?.message);\n        }\n      }\n\n      if (!prepared) {\n        try {\n          const telegramVideo = await getTelegramFileSource(fileId);\n          prepared = await prepareWhatsAppStatusHQ({ sourceUrl: '', platform: 'telegram', video: telegramVideo });\n        } catch (telegramFileError) {\n          if (sourceError) throw sourceError;\n          throw telegramFileError;\n        }\n      }`;
 
 replaceRequired(oldStatusVideoPath, newStatusVideoPath, 'Status HQ source-first video path');
 
-const oldLiveVideoPath = `    try {\n      const telegramVideo = await getTelegramFileSource(fileId);\n      prepared = await prepareIPhoneLiveWallpaper({ video: telegramVideo });\n    } catch (telegramFileError) {\n      console.warn('Live Wallpaper Telegram-file path failed, trying source URL:', telegramFileError?.code, telegramFileError?.message);\n      if (!sourceUrl || !sourcePlatform) throw telegramFileError;\n      prepared = await prepareLiveFromSourceUrl(sourceUrl, sourcePlatform, baseUrl);\n    }`;
-
-const newLiveVideoPath = `    let sourceError = null;\n    if (sourceUrl && sourcePlatform) {\n      try {\n        prepared = await prepareLiveFromSourceUrl(sourceUrl, sourcePlatform, baseUrl);\n      } catch (error) {\n        sourceError = error;\n        console.warn('Live Wallpaper source path failed, trying Telegram file:', error?.code, error?.message);\n      }\n    }\n\n    if (!prepared) {\n      try {\n        const telegramVideo = await getTelegramFileSource(fileId);\n        prepared = await prepareIPhoneLiveWallpaper({ video: telegramVideo });\n      } catch (telegramFileError) {\n        if (sourceError) throw sourceError;\n        throw telegramFileError;\n      }\n    }`;
-
-replaceRequired(oldLiveVideoPath, newLiveVideoPath, 'Live Wallpaper source-first video path');
-
 await writeFile(apiFile, source);
-console.log('Applied compact media source callbacks + source-first Status HQ/Live Wallpaper routing');
+console.log('Applied compact media source callbacks + source-first Status HQ routing');
