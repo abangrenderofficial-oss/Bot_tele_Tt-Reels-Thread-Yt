@@ -23,8 +23,10 @@ BOT_API_BASE = os.environ.get('TELEGRAM_API_BASE_URL', 'https://api.telegram.org
 
 # This worker is intentionally isolated from Status HQ and the normal downloader.
 # For the current iPhone Live Wallpaper experiment we keep the source video's
-# original duration instead of forcing the old 1.5-second wallpaper profile.
+# original duration when Telegram can carry it. Telegram's Live Photo video
+# transport rejects clips above 10 seconds, so we cap at 9.8s for headroom.
 MIN_WALLPAPER_SOURCE_SECONDS = 1.0
+MAX_TELEGRAM_LIVE_SECONDS = 9.8
 TARGET_MOTION_BYTES = 6.5 * MB
 MAX_RAW_MOTION_BYTES = 9 * MB
 MAX_PAIRED_MOTION_BYTES = 10 * MB
@@ -187,13 +189,15 @@ def wallpaper_filter(probe):
 
 
 def encode_motion_and_cover(source, raw_movie, raw_cover, probe):
-    # Preserve the source timeline end-to-end. No 1.5-second trim and no scene
-    # selection: this lets us test the new Apple track-association structure
-    # independently from duration heuristics.
+    # Preserve the source timeline from the beginning, but respect Telegram's
+    # Live Photo transport limit. Source clips up to 9.8s keep their full length;
+    # longer clips are capped to 9.8s instead of being rejected as VIDEO_INVALID.
     clip_start = 0.0
-    duration = probe['duration']
+    source_duration = probe['duration']
+    duration = min(source_duration, MAX_TELEGRAM_LIVE_SECONDS)
+    duration_mode = 'original' if source_duration <= MAX_TELEGRAM_LIVE_SECONDS else 'telegram_cap'
 
-    # Adapt bitrate to the original duration so the paired motion still has a
+    # Adapt bitrate to the actual output duration so the paired motion still has a
     # chance to fit Telegram's Live Photo payload size limit. Short clips can use
     # up to 6.5 Mbps; longer clips progressively use a lower bitrate.
     total_kbps = int((TARGET_MOTION_BYTES * 8 / duration / 1000) * 0.90)
@@ -220,7 +224,7 @@ def encode_motion_and_cover(source, raw_movie, raw_cover, probe):
         raise RuntimeError('Live Wallpaper motion file tidak terhasil.')
     if raw_movie.stat().st_size > MAX_RAW_MOTION_BYTES:
         raise RuntimeError(
-            f'Live Wallpaper motion terlalu besar selepas kekalkan duration asal: '
+            f'Live Wallpaper motion terlalu besar selepas duration diproses: '
             f'{raw_movie.stat().st_size / MB:.2f}MB.'
         )
 
@@ -239,8 +243,8 @@ def encode_motion_and_cover(source, raw_movie, raw_cover, probe):
     return {
         'clip_start': clip_start,
         'duration': duration,
-        'source_duration': probe['duration'],
-        'duration_mode': 'original',
+        'source_duration': source_duration,
+        'duration_mode': duration_mode,
         'video_kbps': video_kbps,
     }
 
@@ -307,7 +311,7 @@ def download_source(path):
 def main():
     require_config()
     print(
-        f'apple live worker input={FILE_SIZE} chat={CHAT_ID} duration_mode=original',
+        f'apple live worker input={FILE_SIZE} chat={CHAT_ID} duration_policy=original_up_to_9.8s',
         flush=True,
     )
 
