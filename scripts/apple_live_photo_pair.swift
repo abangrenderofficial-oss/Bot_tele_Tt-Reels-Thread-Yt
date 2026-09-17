@@ -117,29 +117,9 @@ func pairMovie(inputURL: URL, outputURL: URL, identifier: String) throws {
     try require(writer.canAdd(videoInput), "Could not add video writer input.")
     writer.add(videoInput)
 
-    var audioInput: AVAssetWriterInput?
-    var audioOutput: AVAssetReaderTrackOutput?
-    if let audioTrack = asset.tracks(withMediaType: .audio).first,
-       let rawAudioFormat = audioTrack.formatDescriptions.first {
-        let audioFormat = rawAudioFormat as! CMFormatDescription
-        let output = AVAssetReaderTrackOutput(track: audioTrack, outputSettings: nil)
-        output.alwaysCopiesSampleData = false
-        if reader.canAdd(output) {
-            reader.add(output)
-            let input = AVAssetWriterInput(
-                mediaType: .audio,
-                outputSettings: nil,
-                sourceFormatHint: audioFormat
-            )
-            input.expectsMediaDataInRealTime = false
-            if writer.canAdd(input) {
-                writer.add(input)
-                audioInput = input
-                audioOutput = output
-            }
-        }
-    }
-
+    // Live Wallpaper does not require an audio track. Keeping the native pairer
+    // video-only avoids AVAssetWriter back-pressure/deadlocks when compressed
+    // video and audio are copied sequentially on short ephemeral jobs.
     let metadataAdaptor = try stillImageTimeAdaptor()
     try require(writer.canAdd(metadataAdaptor.assetWriterInput), "Could not add still-image-time writer input.")
     writer.add(metadataAdaptor.assetWriterInput)
@@ -161,31 +141,24 @@ func pairMovie(inputURL: URL, outputURL: URL, identifier: String) throws {
     try require(metadataAdaptor.append(metadataGroup), "Could not append still-image-time metadata sample.")
     metadataAdaptor.assetWriterInput.markAsFinished()
 
-    func copySamples(output: AVAssetReaderTrackOutput, input: AVAssetWriterInput) throws {
-        var finished = false
-        while !finished {
-            if writer.status == .failed {
-                throw PairError.message("Live Photo writer failed: \(writer.error?.localizedDescription ?? "unknown error")")
-            }
-            if reader.status == .failed {
-                throw PairError.message("Live Photo reader failed: \(reader.error?.localizedDescription ?? "unknown error")")
-            }
-            if input.isReadyForMoreMediaData {
-                if let sample = output.copyNextSampleBuffer() {
-                    try require(input.append(sample), "Could not append media sample: \(writer.error?.localizedDescription ?? "unknown error")")
-                } else {
-                    input.markAsFinished()
-                    finished = true
-                }
-            } else {
-                Thread.sleep(forTimeInterval: 0.002)
-            }
+    var videoFinished = false
+    while !videoFinished {
+        if writer.status == .failed {
+            throw PairError.message("Live Photo writer failed: \(writer.error?.localizedDescription ?? "unknown error")")
         }
-    }
-
-    try copySamples(output: videoOutput, input: videoInput)
-    if let audioInput, let audioOutput {
-        try copySamples(output: audioOutput, input: audioInput)
+        if reader.status == .failed {
+            throw PairError.message("Live Photo reader failed: \(reader.error?.localizedDescription ?? "unknown error")")
+        }
+        if videoInput.isReadyForMoreMediaData {
+            if let sample = videoOutput.copyNextSampleBuffer() {
+                try require(videoInput.append(sample), "Could not append video sample: \(writer.error?.localizedDescription ?? "unknown error")")
+            } else {
+                videoInput.markAsFinished()
+                videoFinished = true
+            }
+        } else {
+            Thread.sleep(forTimeInterval: 0.002)
+        }
     }
 
     let semaphore = DispatchSemaphore(value: 0)
