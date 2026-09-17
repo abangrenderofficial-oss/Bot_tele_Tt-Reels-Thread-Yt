@@ -1,0 +1,34 @@
+name: Diagnose TikWM search recovery
+on:
+  push:
+    branches: [diag/tikwm-search-recover]
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Search TikWM feed
+        run: |
+          node --input-type=module <<'NODE'
+          const qs = ['2020 vibes','harusq','bakerysqd','4k60fps anime aesthetic harusq bakerysqd'];
+          const ua='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/140.0 Safari/537.36';
+          for (const q of qs) {
+            for (const cursor of ['0','30','60']) {
+              const u=new URL('https://www.tikwm.com/api/feed/search');
+              u.searchParams.set('keywords',q); u.searchParams.set('count','30'); u.searchParams.set('cursor',cursor); u.searchParams.set('hd','1');
+              const r=await fetch(u,{headers:{accept:'application/json','user-agent':ua,referer:'https://www.tikwm.com/'}});
+              const j=await r.json().catch(()=>null);
+              const arr=Array.isArray(j?.data?.videos)?j.data.videos:(Array.isArray(j?.data)?j.data:[]);
+              console.log('QUERY',JSON.stringify(q),'CURSOR',cursor,'HTTP',r.status,'CODE',j?.code,'MSG',j?.msg,'N',arr.length);
+              for (const v of arr) {
+                const title=String(v.title||v.desc||'').replace(/\s+/g,' ').slice(0,300);
+                const author=v.author?.unique_id||v.author?.uniqueId||v.author?.nickname||v.author||'';
+                const id=v.video_id||v.id||v.aweme_id||'';
+                if (/2020 vibes|harusq|bakerysqd|4k60fps/i.test(title)) console.log('MATCH','ID',id,'AUTHOR',author,'TITLE',title,'PLAY',String(v.play||v.play_addr||'').slice(0,160));
+              }
+            }
+          }
+          NODE
