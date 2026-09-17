@@ -82,10 +82,25 @@ function sourceCaption(title, url, quality = '') {
   return suffix ? `${head}\n${suffix}`.slice(0, 1024) : head.slice(0, 1024);
 }
 
-function statusButton() {
+function statusCallbackData(sourceUrl = '') {
+  const raw = String(sourceUrl || '').trim();
+  if (!raw) return MEDIA_STATUS_HQ;
+
+  try {
+    const compact = new URL(raw);
+    compact.search = '';
+    compact.hash = '';
+    const data = `${MEDIA_STATUS_HQ}|${compact.toString()}`;
+    if (Buffer.byteLength(data, 'utf8') <= 64) return data;
+  } catch {}
+
+  return MEDIA_STATUS_HQ;
+}
+
+function statusButton(sourceUrl = '') {
   return {
     reply_markup: {
-      inline_keyboard: [[{ text: '📱 Status HQ', callback_data: MEDIA_STATUS_HQ }]],
+      inline_keyboard: [[{ text: '📱 Status HQ', callback_data: statusCallbackData(sourceUrl) }]],
     },
   };
 }
@@ -385,8 +400,7 @@ async function deliverCompressedSocial(chatId, video, title, durationHint, sourc
     prepared = await prepareSocialVideoTelegramUpload(video, configuredUploadLimit(), {
       duration: Number(video?.duration || durationHint || 0) || null,
     });
-    const caption = sourceCaption(title, sourceUrl, prepared.compressed ? prepared.quality : '');
-    return await sendVideoFileUpload(chatId, prepared.filePath, caption, statusButton());
+    return await sendVideoFileUpload(chatId, prepared.filePath, '', statusButton(sourceUrl));
   } catch (error) {
     console.warn('Social HQ compression/upload failed:', error?.code, error?.message);
     return null;
@@ -403,13 +417,12 @@ async function deliverVideo(chatId, video, title, baseUrl, options = {}) {
   const relay = relayItem(baseUrl, video);
   const uploadLimit = configuredUploadLimit();
   const allowSocialCompression = options.platform && options.platform !== 'youtube';
-  const caption = sourceCaption(title, options.sourceUrl || '', video.quality || '');
 
   if (!size || size <= TELEGRAM_URL_FETCH_MAX) {
     const fetchUrl = customHeaders ? relay?.url : video.url;
     if (fetchUrl) {
       try {
-        return await sendVideoUrl(chatId, fetchUrl, caption, statusButton());
+        return await sendVideoUrl(chatId, fetchUrl, '', statusButton(options.sourceUrl));
       } catch (error) {
         console.warn('Telegram URL fetch failed, trying server upload:', error?.message);
       }
@@ -425,7 +438,7 @@ async function deliverVideo(chatId, video, title, baseUrl, options = {}) {
   }
 
   try {
-    return await sendVideoUpload(chatId, video, caption, statusButton());
+    return await sendVideoUpload(chatId, video, '', statusButton(options.sourceUrl));
   } catch (error) {
     console.warn('Telegram server upload failed:', error?.code, error?.message);
     if (allowSocialCompression) {
@@ -439,8 +452,7 @@ async function deliverPreferredYouTube(chatId, url, title) {
   let prepared = null;
   try {
     prepared = await prepareYouTubeTelegramUpload(url, configuredUploadLimit());
-    const caption = sourceCaption(title, url, prepared.quality);
-    return await sendVideoFileUpload(chatId, prepared.filePath, caption, statusButton());
+    return await sendVideoFileUpload(chatId, prepared.filePath, '', statusButton(url));
   } catch (error) {
     console.warn('Preferred YouTube pipeline failed:', error?.code, error?.message);
     return null;
@@ -552,8 +564,8 @@ async function processTikTokVideo(callbackQuery, mirrorGroupId = '') {
     const sent = await sendVideoFileUpload(
       chatId,
       preparedVideo.filePath,
-      sourceCaption('TikTok slideshow', sourceUrl, preparedVideo.quality),
-      statusButton(),
+      '',
+      statusButton(sourceUrl),
     );
     await mirrorVideoToGroup(chatId, sent, mirrorGroupId, callbackQuery.from, {
       sourceUrl,
@@ -629,12 +641,16 @@ async function processStatusFromLink(chatId, url, platform) {
 }
 
 async function processStatusButton(callbackQuery) {
-  if (String(callbackQuery?.data || '') !== MEDIA_STATUS_HQ) return false;
+  const action = String(callbackQuery?.data || '');
+  if (!action.startsWith(MEDIA_STATUS_HQ)) return false;
 
   const chatId = callbackQuery?.message?.chat?.id;
   const fileId = callbackQuery?.message?.video?.file_id;
   const caption = callbackQuery?.message?.caption || '';
-  const sourceUrl = extractFirstUrl(caption);
+  const embeddedSourceUrl = action.startsWith(`${MEDIA_STATUS_HQ}|`)
+    ? action.slice(MEDIA_STATUS_HQ.length + 1)
+    : '';
+  const sourceUrl = extractFirstUrl(caption) || extractFirstUrl(embeddedSourceUrl);
   const sourcePlatform = sourceUrl ? detectPlatform(sourceUrl) : null;
   if (!chatId) return true;
 
