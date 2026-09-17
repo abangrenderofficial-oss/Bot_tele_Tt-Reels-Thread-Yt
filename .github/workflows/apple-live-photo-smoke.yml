@@ -1,0 +1,53 @@
+name: Apple Live Photo Smoke Test
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/apple_live_photo_pair.swift'
+      - 'scripts/apple_live_worker.py'
+      - '.github/workflows/heavy-status-hq.yml'
+      - '.github/workflows/apple-live-photo-smoke.yml'
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Ensure FFmpeg
+        shell: bash
+        run: |
+          if ! command -v ffmpeg >/dev/null 2>&1 || ! command -v ffprobe >/dev/null 2>&1; then
+            brew install ffmpeg
+          fi
+          ffmpeg -version | head -n 1
+          swift --version
+
+      - name: Check Apple worker Python syntax
+        run: python3 -m py_compile scripts/apple_live_worker.py
+
+      - name: Build native Apple pairer
+        run: swiftc scripts/apple_live_photo_pair.swift -o /tmp/apple-live-pair
+
+      - name: Generate synthetic Live Photo source
+        shell: bash
+        run: |
+          ffmpeg -y -hide_banner -loglevel error \
+            -f lavfi -i 'testsrc2=size=720x1280:rate=30' \
+            -f lavfi -i 'sine=frequency=440:sample_rate=44100' \
+            -t 3 \
+            -c:v libx264 -pix_fmt yuv420p -b:v 2500k \
+            -c:a aac -b:a 96k \
+            -movflags +faststart -f mov /tmp/raw.mov
+          ffmpeg -y -hide_banner -loglevel error -ss 1.5 -i /tmp/raw.mov -frames:v 1 -q:v 2 /tmp/raw.jpg
+
+      - name: Pair and verify Apple Live Photo
+        run: |
+          /tmp/apple-live-pair /tmp/raw.jpg /tmp/raw.mov /tmp/paired.jpg /tmp/paired.mov
+          test -s /tmp/paired.jpg
+          test -s /tmp/paired.mov
+          ls -lh /tmp/paired.jpg /tmp/paired.mov
