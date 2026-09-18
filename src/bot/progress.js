@@ -14,13 +14,6 @@ function liveProgressText(percent) {
   return `🍎 Live Wallpaper sedang diproses...\n${bar} ${value}%`;
 }
 
-function livePreviewProgressText(percent) {
-  const value = Math.max(1, Math.min(100, Math.round(Number(percent) || 1)));
-  const filled = value >= 100 ? 10 : Math.min(9, Math.floor(value / 10));
-  const bar = `${'▰'.repeat(filled)}${'▱'.repeat(10 - filled)}`;
-  return `👀 Preview motion sedang dibuat...\n${bar} ${value}%`;
-}
-
 async function startProgress(chatId, textBuilder) {
   const progressMessage = await sendMessage(chatId, textBuilder(1)).catch(() => null);
   const messageId = progressMessage?.message_id;
@@ -77,10 +70,6 @@ export async function startHeavyStatusProgress(chatId) {
 
 export async function startHeavyLiveProgress(chatId) {
   return sendMessage(chatId, liveProgressText(1)).catch(() => null);
-}
-
-export async function startHeavyLivePreviewProgress(chatId) {
-  return sendMessage(chatId, livePreviewProgressText(1)).catch(() => null);
 }
 
 export async function removeHeavyProgress(chatId, messageId) {
