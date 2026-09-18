@@ -61,6 +61,21 @@ function orderedVideoCandidates(videos = []) {
   return [...likelySendable, ...knownTooLarge];
 }
 
+function telegramVideoExtra(video, options = {}) {
+  const width = Math.round(Number(video?.width || 0));
+  const height = Math.round(Number(video?.height || 0));
+  const durationValue = Number(video?.duration || options.duration || 0);
+  const duration = durationValue > 0 ? Math.max(1, Math.round(durationValue)) : 0;
+
+  return {
+    ...mediaActionButtons(options.sourceUrl),
+    ...(width > 0 ? { width } : {}),
+    ...(height > 0 ? { height } : {}),
+    ...(duration > 0 ? { duration } : {}),
+    supports_streaming: true,
+  };
+}
+
 async function sendImageFallback(chatId, images, title) {
   const buttons = images.slice(0, 20).map((image, index) => [
     { text: `⬇️ Download image ${index + 1}`, url: image.url },
@@ -121,12 +136,13 @@ async function deliverVideo(chatId, video, baseUrl, options = {}) {
   const relay = relayItem(baseUrl, video);
   const uploadLimit = configuredUploadLimit();
   const allowSocialCompression = options.allowCompression !== false && options.platform && options.platform !== 'youtube';
+  const sendExtra = telegramVideoExtra(video, options);
 
   if (!size || size <= TELEGRAM_URL_FETCH_MAX) {
     const fetchUrl = customHeaders ? relay?.url : video.url;
     if (fetchUrl) {
       try {
-        return await sendVideoUrl(chatId, fetchUrl, '', mediaActionButtons(options.sourceUrl));
+        return await sendVideoUrl(chatId, fetchUrl, '', sendExtra);
       } catch (error) {
         console.warn('[downloader] Telegram URL fetch failed, trying server upload:', error?.message);
       }
@@ -141,7 +157,7 @@ async function deliverVideo(chatId, video, baseUrl, options = {}) {
   }
 
   try {
-    return await sendVideoUpload(chatId, video, '', mediaActionButtons(options.sourceUrl));
+    return await sendVideoUpload(chatId, video, '', sendExtra);
   } catch (error) {
     console.warn('[downloader] Telegram server upload failed:', error?.code, error?.message);
     if (allowSocialCompression) {
