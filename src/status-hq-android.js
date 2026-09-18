@@ -11,6 +11,7 @@ import ffmpegPath from 'ffmpeg-static';
 
 const execFileAsync = promisify(execFile);
 const MB = 1024 * 1024;
+const WHATSAPP_SAFE_MAX_BYTES = Math.floor(15.5 * MB);
 
 function commandOptions(timeoutMs) {
   return {
@@ -23,12 +24,27 @@ function commandOptions(timeoutMs) {
   };
 }
 
-async function fetchWithHeaderTimeout(url, timeoutMs) {
+function sourceHeaders(headers) {
+  const source = headers && typeof headers === 'object' ? headers : {};
+  const allowed = new Set(['user-agent', 'referer', 'origin', 'accept', 'accept-language']);
+  const out = {};
+  for (const [key, value] of Object.entries(source)) {
+    if (!allowed.has(String(key).toLowerCase())) continue;
+    if (typeof value !== 'string' || !value) continue;
+    out[key] = value;
+  }
+  if (!Object.keys(out).some((key) => key.toLowerCase() === 'user-agent')) {
+    out['User-Agent'] = 'Mozilla/5.0 (compatible; ARDownloader/1.0)';
+  }
+  return out;
+}
+
+async function fetchWithHeaderTimeout(url, options, timeoutMs) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), Math.max(5000, Number(timeoutMs) || 30000));
   try {
     const response = await fetch(url, {
-      method: 'GET',
+      ...options,
       redirect: 'follow',
       signal: controller.signal,
     });
@@ -40,7 +56,7 @@ async function fetchWithHeaderTimeout(url, timeoutMs) {
   }
 }
 
-async function downloadTelegramVideo(item, filePath) {
+async function downloadSourceVideo(item, filePath) {
   if (!item?.url) {
     const error = new Error('Android Status HQ source video URL is missing.');
     error.code = 'STATUS_ANDROID_SOURCE_MISSING';
@@ -49,6 +65,7 @@ async function downloadTelegramVideo(item, filePath) {
 
   const response = await fetchWithHeaderTimeout(
     item.url,
+    { method: 'GET', headers: sourceHeaders(item.headers) },
     Number(process.env.STATUS_ANDROID_SOURCE_HEADER_TIMEOUT_MS || 30000),
   );
   if (!response.ok || !response.body) {
@@ -99,18 +116,20 @@ function configuredUploadLimitBytes() {
   return Math.floor(mb * MB);
 }
 
-function targetOutputBytes() {
-  const uploadLimit = configuredUploadLimitBytes();
+function whatsappSafeOutputBytes() {
+  const telegramSafe = Math.floor(configuredUploadLimitBytes() * 0.9);
   const customMb = Number(process.env.STATUS_ANDROID_TARGET_MB || 0);
-  const requested = Number.isFinite(customMb) && customMb > 0 ? customMb * MB : 45 * MB;
-  return Math.floor(Math.min(requested, uploadLimit * 0.9));
+  const requested = Number.isFinite(customMb) && customMb > 0
+    ? Math.floor(customMb * MB)
+    : WHATSAPP_SAFE_MAX_BYTES;
+  return Math.max(1 * MB, Math.min(requested, WHATSAPP_SAFE_MAX_BYTES, telegramSafe));
 }
 
 function chooseAndroidPlan(probe) {
   const duration = Math.max(1, Number(probe.duration || 0));
   const audioKbps = 128;
-  const totalKbps = Math.max(420, Math.floor((targetOutputBytes() * 8 / duration / 1000) * 0.92));
-  const videoKbps = Math.max(220, Math.min(2800, totalKbps - audioKbps - 60));
+  const totalKbps = Math.max(320, Math.floor((whatsappSafeOutputBytes() * 8 / duration / 1000) * 0.94));
+  const videoKbps = Math.max(180, Math.min(3800, totalKbps - audioKbps - 80));
   return {
     duration,
     audioKbps,
@@ -121,10 +140,10 @@ function chooseAndroidPlan(probe) {
 }
 
 function androidVideoFilter() {
-  const landscapeMaxW = 1280;
-  const landscapeMaxH = 720;
-  const portraitMaxW = 720;
-  const portraitMaxH = 1280;
+  const landscapeMaxW = 1920;
+  const landscapeMaxH = 1080;
+  const portraitMaxW = 1080;
+  const portraitMaxH = 1920;
   const maxW = `if(gte(iw,ih),${landscapeMaxW},${portraitMaxW})`;
   const maxH = `if(gte(iw,ih),${landscapeMaxH},${portraitMaxH})`;
   const fit = `min(1,min((${maxW})/iw,(${maxH})/ih))`;
@@ -135,21 +154,23 @@ function androidVideoFilter() {
   ].join(',');
 }
 
-async function encodeAndroidStatus(inputPath, outputPath, plan, bitrateScale = 1) {
+async function encodeAndroidStatus(inputPath, outputPath, plan, attempt) {
   await rm(outputPath, { force: true }).catch(() => {});
-  const videoKbps = Math.max(180, Math.floor(plan.videoKbps * bitrateScale));
-  const maxRate = Math.max(videoKbps, Math.floor(videoKbps * 1.12));
-  const buffer = Math.max(1000, maxRate * 2);
+  const rateScale = Number(attempt?.rateScale || 1);
+  const crf = Math.max(18, Math.min(28, Number(attempt?.crf || 23)));
+  const maxRate = Math.max(180, Math.floor(plan.videoKbps * rateScale));
+  const buffer = Math.max(1000, Math.floor(maxRate * 1.5));
   const args = [
     '-y', '-hide_banner', '-loglevel', 'error', '-nostats', '-nostdin',
     '-filter_threads', String(plan.filterThreads),
     '-i', inputPath,
     '-map', '0:v:0', '-map', '0:a:0?',
     '-vf', androidVideoFilter(),
-    '-c:v', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p',
-    '-b:v', `${videoKbps}k`, '-maxrate', `${maxRate}k`, '-bufsize', `${buffer}k`,
-    '-profile:v', 'high', '-level:v', '3.1',
-    '-g', '60', '-keyint_min', '60', '-sc_threshold', '0',
+    '-c:v', 'libx264', '-preset', 'faster', '-pix_fmt', 'yuv420p',
+    '-crf', String(crf), '-maxrate', `${maxRate}k`, '-bufsize', `${buffer}k`,
+    '-profile:v', 'high', '-level:v', '4.0',
+    '-g', '250', '-sc_threshold', '0',
+    '-color_range', 'tv', '-color_primaries', 'bt709', '-color_trc', 'bt709', '-colorspace', 'bt709',
     '-c:a', 'aac', '-ar', '44100', '-ac', '2', '-b:a', `${plan.audioKbps}k`,
     '-brand', 'isom', '-movflags', '+faststart', '-metadata:s:v:0', 'rotate=0',
     '-map_metadata', '-1', '-f', 'mp4', '-threads', String(plan.threads), outputPath,
@@ -159,7 +180,7 @@ async function encodeAndroidStatus(inputPath, outputPath, plan, bitrateScale = 1
     await execFileAsync(
       ffmpegPath,
       args,
-      commandOptions(Number(process.env.STATUS_ANDROID_ENCODE_TIMEOUT_MS || 260000)),
+      commandOptions(Number(process.env.STATUS_ANDROID_ENCODE_TIMEOUT_MS || 320000)),
     );
   } catch (error) {
     console.error('[status-hq/android] ffmpeg failed:', {
@@ -177,7 +198,7 @@ async function encodeAndroidStatus(inputPath, outputPath, plan, bitrateScale = 1
     error.code = 'STATUS_ANDROID_OUTPUT_MISSING';
     throw error;
   }
-  return { size: info.size, videoKbps };
+  return { size: info.size, videoKbps: maxRate, crf };
 }
 
 async function cleanup(paths) {
@@ -191,11 +212,15 @@ export async function prepareWhatsAppStatusAndroidHQ({ video }) {
   const paths = [inputPath];
 
   try {
-    await downloadTelegramVideo(video, inputPath);
+    await downloadSourceVideo(video, inputPath);
     const probe = await probeLocalVideo(inputPath);
     const plan = chooseAndroidPlan(probe);
-    const safeLimit = Math.floor(configuredUploadLimitBytes() * 0.94);
-    const attempts = [1, 0.84, 0.7];
+    const safeLimit = whatsappSafeOutputBytes();
+    const attempts = [
+      { rateScale: 1, crf: 23 },
+      { rateScale: 0.84, crf: 24 },
+      { rateScale: 0.70, crf: 25 },
+    ];
     let encoded = null;
     let outputPath = '';
     let usedAttempt = 0;
@@ -210,7 +235,7 @@ export async function prepareWhatsAppStatusAndroidHQ({ video }) {
     }
 
     if (!encoded || encoded.size > safeLimit) {
-      const error = new Error('Android Status HQ output masih melebihi had Telegram.');
+      const error = new Error('Android Status HQ output masih melebihi had profile WhatsApp-safe.');
       error.code = 'STATUS_ANDROID_FILE_TOO_LARGE';
       throw error;
     }
@@ -221,14 +246,16 @@ export async function prepareWhatsAppStatusAndroidHQ({ video }) {
       size: encoded.size,
       source: probe,
       profile: {
-        mode: 'android-beta',
-        maxLandscape: '1280x720',
-        maxPortrait: '720x1280',
+        mode: 'android-beta-v2',
+        maxLandscape: '1920x1080',
+        maxPortrait: '1080x1920',
         fps: 30,
-        videoKbps: encoded.videoKbps,
+        maxVideoKbps: encoded.videoKbps,
+        crf: encoded.crf,
         audioKbps: plan.audioKbps,
+        maxOutputMb: Number((safeLimit / MB).toFixed(2)),
       },
-      quality: 'Status HQ Android Beta • H.264 • 30fps CFR • yuv420p • ratio asal',
+      quality: 'Status HQ Android Beta v2 • H.264 High • 30fps CFR • yuv420p • WhatsApp-safe size • ratio asal',
       attempt: usedAttempt,
       cleanup: async () => cleanup(paths),
     };
