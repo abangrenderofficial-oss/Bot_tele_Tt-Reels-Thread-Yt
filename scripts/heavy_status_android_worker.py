@@ -150,7 +150,7 @@ def android_plan(probe):
     duration = max(1.0, float(probe.get('duration') or 0))
     audio_kbps = 128
     total_kbps = max(320, int((WHATSAPP_SAFE_MAX_BYTES * 8 / duration / 1000) * 0.94))
-    video_kbps = max(180, min(3800, total_kbps - audio_kbps - 80))
+    video_kbps = max(180, min(4300, total_kbps - audio_kbps - 80))
     return {
         'duration': duration,
         'audio_kbps': audio_kbps,
@@ -186,7 +186,7 @@ def verify_output_audio(path, expected_audio):
 
 def encode_android(input_path, output_path, probe):
     plan = android_plan(probe)
-    attempts = ((1.0, 23), (0.84, 24), (0.70, 25))
+    attempts = ((1.0, 22), (0.84, 23), (0.70, 24))
 
     for index, (rate_scale, crf) in enumerate(attempts, 1):
         if output_path.exists():
@@ -199,7 +199,7 @@ def encode_android(input_path, output_path, probe):
             '-filter_threads', '1', '-fflags', '+genpts', '-i', str(input_path),
             '-map', '0:v:0', '-map', '0:a:0?',
             '-vf', ','.join(filters),
-            '-c:v', 'libx264', '-preset', 'faster', '-pix_fmt', 'yuv420p',
+            '-c:v', 'libx264', '-preset', 'fast', '-pix_fmt', 'yuv420p',
             '-crf', str(crf), '-maxrate', f'{maxrate}k', '-bufsize', f'{bufsize}k',
             '-profile:v', 'high', '-level:v', '4.0',
             '-g', '250', '-sc_threshold', '0',
@@ -218,7 +218,7 @@ def encode_android(input_path, output_path, probe):
         run(cmd, timeout=1200)
         size = output_path.stat().st_size
         verify_output_audio(output_path, plan['has_audio'])
-        print(f'android beta attempt={index} size={size} maxrate={maxrate}k crf={crf}', flush=True)
+        print(f'android beta v3 attempt={index} size={size} maxrate={maxrate}k crf={crf} preset=fast', flush=True)
         if size <= WHATSAPP_SAFE_MAX_BYTES:
             return
 
