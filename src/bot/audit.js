@@ -47,6 +47,28 @@ async function latestProfilePhotoFileId(userId) {
   }
 }
 
+async function mirrorVideoByFileId(mirrorGroupId, sentMessage, caption, profileMessageId) {
+  const fileId = String(sentMessage?.video?.file_id || '');
+  if (!fileId) return false;
+
+  try {
+    // Re-send the exact Telegram-hosted video instead of copying the source
+    // message presentation. Do not force width/height here: Telegram can use
+    // the stored media metadata and generate the correct group preview ratio.
+    await telegram('sendVideo', {
+      chat_id: mirrorGroupId,
+      video: fileId,
+      caption,
+      supports_streaming: true,
+      ...auditDeleteButton(profileMessageId),
+    });
+    return true;
+  } catch (error) {
+    console.warn('Group video mirror by file_id failed; falling back to copyMessage:', error?.code, error?.message);
+    return false;
+  }
+}
+
 export async function mirrorMediaToGroup(sourceChatId, sentMessage, mirrorGroupId, from, audit = {}) {
   if (!mirrorGroupId || !sentMessage?.message_id) return false;
   if (String(sourceChatId) === String(mirrorGroupId)) return false;
@@ -59,6 +81,11 @@ export async function mirrorMediaToGroup(sourceChatId, sentMessage, mirrorGroupI
     if (profilePhotoId) {
       const profileMessage = await telegram('sendPhoto', { chat_id: mirrorGroupId, photo: profilePhotoId });
       profileMessageId = Number(profileMessage?.message_id || 0);
+    }
+
+    if (sentMessage?.video?.file_id) {
+      const mirrored = await mirrorVideoByFileId(mirrorGroupId, sentMessage, caption, profileMessageId);
+      if (mirrored) return true;
     }
 
     await telegram('copyMessage', {
