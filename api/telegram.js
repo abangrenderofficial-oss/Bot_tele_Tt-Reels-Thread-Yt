@@ -9,6 +9,7 @@ import {
 } from '../src/recovery.js';
 import { commandMenuText, START_TEXT } from '../src/bot/commands.js';
 import { handleConnectCommand, processAuditDelete, setMirrorWebhook } from '../src/bot/audit.js';
+import { processStatusAndroidButton } from '../src/features/status-hq-android.js';
 import { processStatusButton, processStatusFromLink } from '../src/features/status-hq.js';
 import { processLiveWallpaperButton } from '../src/features/live-wallpaper.js';
 import { processUploadedPhoto, processUploadedVideo } from '../src/features/uploaded-media.js';
@@ -104,6 +105,7 @@ async function runWebhookUpdate(update, context) {
   const callbackQuery = update?.callback_query;
   if (callbackQuery) {
     if (await processAuditDelete(callbackQuery)) return;
+    if (await processStatusAndroidButton(callbackQuery, context)) return;
     if (await processStatusButton(callbackQuery, context)) return;
     if (await processLiveWallpaperButton(callbackQuery, context)) return;
     await processTikTokSlideshowChoice(callbackQuery, context);
