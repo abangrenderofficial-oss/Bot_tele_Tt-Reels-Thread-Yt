@@ -1,6 +1,7 @@
 import { telegram } from '../telegram.js';
 import {
   MEDIA_STATUS_HQ,
+  MEDIA_STATUS_HQ_ANDROID,
   MEDIA_STATUS_HQ_MENU,
   callbackSourceUrl,
   galleryMediaMeta,
@@ -11,9 +12,10 @@ import {
 function profileMenuAlreadyOpen(callbackQuery) {
   const rows = callbackQuery?.message?.reply_markup?.inline_keyboard;
   if (!Array.isArray(rows)) return false;
+
   return rows.flat().some((button) => {
-    const text = String(button?.text || '');
-    return text.includes('Standard HQ') || text.includes('Android Compatibility');
+    const data = String(button?.callback_data || '');
+    return data.startsWith(MEDIA_STATUS_HQ) || data.startsWith(MEDIA_STATUS_HQ_ANDROID);
   });
 }
 
@@ -34,7 +36,7 @@ export async function processStatusProfileMenu(callbackQuery) {
   // - old Gallery messages used MEDIA_STATUS_HQ directly;
   // - old social-video messages also used MEDIA_STATUS_HQ directly.
   // Both are upgraded into the chooser. Once the chooser is visible, the
-  // Standard HQ button is allowed to fall through to the encoder handler.
+  // Premium HQ button must fall through to the encoder handler.
   if (!directMenu && !legacyGallery && !legacySocial) return false;
   if (!directMenu && legacyGallery && profileMenuAlreadyOpen(callbackQuery)) return false;
 
