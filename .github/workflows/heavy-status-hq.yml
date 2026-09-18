@@ -36,7 +36,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: heavy-media-${{ inputs.chat_id }}
+  group: heavy-media-${{ inputs.action }}-${{ inputs.chat_id }}
   cancel-in-progress: false
 
 jobs:
@@ -112,6 +112,7 @@ jobs:
             brew install ffmpeg
           fi
           ffmpeg -version | head -n 1
+          ffmpeg -hide_banner -encoders 2>/dev/null | grep -q hevc_videotoolbox
           swift --version
 
       - name: Install MTProto client
