@@ -76,6 +76,10 @@ function telegramVideoExtra(video, options = {}) {
   };
 }
 
+function shouldProbeActualSocialUpload(platform) {
+  return ['tiktok', 'instagram', 'threads', 'twitter'].includes(String(platform || '').toLowerCase());
+}
+
 async function sendImageFallback(chatId, images, title) {
   const buttons = images.slice(0, 20).map((image, index) => [
     { text: `⬇️ Download image ${index + 1}`, url: image.url },
@@ -137,8 +141,9 @@ async function deliverVideo(chatId, video, baseUrl, options = {}) {
   const uploadLimit = configuredUploadLimit();
   const allowSocialCompression = options.allowCompression !== false && options.platform && options.platform !== 'youtube';
   const sendExtra = telegramVideoExtra(video, options);
+  const probeActualUpload = shouldProbeActualSocialUpload(options.platform);
 
-  if (!size || size <= TELEGRAM_URL_FETCH_MAX) {
+  if (!probeActualUpload && (!size || size <= TELEGRAM_URL_FETCH_MAX)) {
     const fetchUrl = customHeaders ? relay?.url : video.url;
     if (fetchUrl) {
       try {
