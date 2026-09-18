@@ -17,14 +17,9 @@ on:
         default: '0'
         type: string
       action:
-        description: status_hq, live_preview or live_wallpaper
+        description: status_hq or live_wallpaper
         required: true
         default: status_hq
-        type: string
-      speed:
-        description: Live Wallpaper motion speed
-        required: false
-        default: '1.0'
         type: string
       progress_message_id:
         description: Bot progress message ID
@@ -85,48 +80,6 @@ jobs:
       - name: Process Status HQ
         run: python scripts/heavy_status_worker.py
 
-
-  live_preview:
-    if: ${{ inputs.action == 'live_preview' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
-    env:
-      TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
-      TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
-      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-      HEAVY_CHAT_ID: ${{ inputs.chat_id }}
-      HEAVY_VIDEO_FILE_ID: ${{ inputs.video_file_id }}
-      HEAVY_FILE_SIZE: ${{ inputs.file_size }}
-      HEAVY_ACTION: live_preview
-      HEAVY_SPEED: ${{ inputs.speed }}
-      HEAVY_PROGRESS_MESSAGE_ID: ${{ inputs.progress_message_id }}
-      HEAVY_SOURCE_MESSAGE_ID: ${{ inputs.source_message_id }}
-      HEAVY_VIDEO_MAX_MB: '500'
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
-      - name: Ensure FFmpeg
-        shell: bash
-        run: |
-          if ! command -v ffmpeg >/dev/null 2>&1 || ! command -v ffprobe >/dev/null 2>&1; then
-            sudo apt-get update -qq
-            sudo apt-get install -y ffmpeg
-          fi
-          ffmpeg -version | head -n 1
-
-      - name: Install MTProto client
-        run: python -m pip install --disable-pip-version-check --quiet 'kurigram[fast]==2.2.26' requests
-
-      - name: Build motion preview
-        run: python scripts/live_preview_worker.py
-
   live_wallpaper:
     if: ${{ inputs.action == 'live_wallpaper' }}
     runs-on: macos-15
@@ -139,7 +92,6 @@ jobs:
       HEAVY_VIDEO_FILE_ID: ${{ inputs.video_file_id }}
       HEAVY_FILE_SIZE: ${{ inputs.file_size }}
       HEAVY_ACTION: live_wallpaper
-      HEAVY_SPEED: ${{ inputs.speed }}
       HEAVY_PROGRESS_MESSAGE_ID: ${{ inputs.progress_message_id }}
       HEAVY_SOURCE_MESSAGE_ID: ${{ inputs.source_message_id }}
       HEAVY_VIDEO_MAX_MB: '500'
