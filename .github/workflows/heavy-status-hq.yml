@@ -21,6 +21,11 @@ on:
         required: true
         default: status_hq
         type: string
+      source_kind:
+        description: link or gallery
+        required: false
+        default: link
+        type: string
       progress_message_id:
         description: Bot progress message ID
         required: false
@@ -92,6 +97,7 @@ jobs:
       HEAVY_VIDEO_FILE_ID: ${{ inputs.video_file_id }}
       HEAVY_FILE_SIZE: ${{ inputs.file_size }}
       HEAVY_ACTION: live_wallpaper
+      HEAVY_SOURCE_KIND: ${{ inputs.source_kind }}
       HEAVY_PROGRESS_MESSAGE_ID: ${{ inputs.progress_message_id }}
       HEAVY_SOURCE_MESSAGE_ID: ${{ inputs.source_message_id }}
       HEAVY_VIDEO_MAX_MB: '500'
