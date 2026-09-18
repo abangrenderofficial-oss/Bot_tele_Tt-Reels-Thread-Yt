@@ -194,7 +194,7 @@ function chooseAndroidPlan(probe) {
   const duration = Math.max(1, Number(probe.duration || 0));
   const audioKbps = 128;
   const totalKbps = Math.max(320, Math.floor((whatsappSafeOutputBytes() * 8 / duration / 1000) * 0.94));
-  const videoKbps = Math.max(180, Math.min(3800, totalKbps - audioKbps - 80));
+  const videoKbps = Math.max(180, Math.min(4300, totalKbps - audioKbps - 80));
   return {
     duration,
     audioKbps,
@@ -247,7 +247,7 @@ async function verifyAndroidAudio(outputPath, expectedAudio) {
 async function encodeAndroidStatus(inputPath, outputPath, plan, attempt) {
   await rm(outputPath, { force: true }).catch(() => {});
   const rateScale = Number(attempt?.rateScale || 1);
-  const crf = Math.max(18, Math.min(28, Number(attempt?.crf || 23)));
+  const crf = Math.max(18, Math.min(28, Number(attempt?.crf || 22)));
   const maxRate = Math.max(180, Math.floor(plan.videoKbps * rateScale));
   const buffer = Math.max(1000, Math.floor(maxRate * 1.5));
   const args = [
@@ -257,7 +257,7 @@ async function encodeAndroidStatus(inputPath, outputPath, plan, attempt) {
     '-i', inputPath,
     '-map', '0:v:0', '-map', '0:a:0?',
     '-vf', androidVideoFilter(),
-    '-c:v', 'libx264', '-preset', 'faster', '-pix_fmt', 'yuv420p',
+    '-c:v', 'libx264', '-preset', 'fast', '-pix_fmt', 'yuv420p',
     '-crf', String(crf), '-maxrate', `${maxRate}k`, '-bufsize', `${buffer}k`,
     '-profile:v', 'high', '-level:v', '4.0',
     '-g', '250', '-sc_threshold', '0',
@@ -330,9 +330,9 @@ export async function prepareWhatsAppStatusAndroidHQ({ video, sourceUrl = '', pl
     const plan = chooseAndroidPlan(probe);
     const safeLimit = whatsappSafeOutputBytes();
     const attempts = [
-      { rateScale: 1, crf: 23 },
-      { rateScale: 0.84, crf: 24 },
-      { rateScale: 0.70, crf: 25 },
+      { rateScale: 1, crf: 22 },
+      { rateScale: 0.84, crf: 23 },
+      { rateScale: 0.70, crf: 24 },
     ];
     let encoded = null;
     let outputPath = '';
@@ -359,17 +359,18 @@ export async function prepareWhatsAppStatusAndroidHQ({ video, sourceUrl = '', pl
       size: encoded.size,
       source: probe,
       profile: {
-        mode: 'android-beta-v2',
+        mode: 'android-beta-v3',
         maxLandscape: '1920x1080',
         maxPortrait: '1080x1920',
         fps: 30,
         maxVideoKbps: encoded.videoKbps,
         crf: encoded.crf,
+        preset: 'fast',
         audioKbps: plan.audioKbps,
         audioProfile: plan.hasAudio ? 'AAC-LC 48kHz stereo' : 'source has no audio',
         maxOutputMb: Number((safeLimit / MB).toFixed(2)),
       },
-      quality: 'Status HQ Android Beta v2 • H.264 High • 30fps CFR • yuv420p • WhatsApp-safe size • ratio asal',
+      quality: 'Status HQ Android Beta v3 • H.264 High • CRF22-first • up to 4.3Mbps • preset fast • 30fps CFR • yuv420p • WhatsApp-safe size • ratio asal',
       attempt: usedAttempt,
       cleanup: async () => cleanup(paths),
     };
