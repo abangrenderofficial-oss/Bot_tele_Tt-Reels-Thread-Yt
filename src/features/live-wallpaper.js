@@ -74,7 +74,7 @@ export async function processLiveWallpaperButton(callbackQuery, context = {}) {
       action: 'live_wallpaper',
       sourceKind: gallery ? 'gallery' : 'link',
       progressMessageId: progressMessage?.message_id || 0,
-      sourceMessageId: callbackMessageId || gallery?.sourceMessageId || 0,
+      sourceMessageId: gallery?.sourceMessageId || callbackMessageId || 0,
     });
   } catch (error) {
     console.error('[live-wallpaper] dispatch failed:', error?.code, error?.message);
