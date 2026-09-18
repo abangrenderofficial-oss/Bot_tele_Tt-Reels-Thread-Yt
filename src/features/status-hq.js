@@ -14,6 +14,7 @@ import {
 import { localMediaLane } from '../bot/job-lanes.js';
 import { removeHeavyProgress, startHeavyStatusProgress, startStatusProgress } from '../bot/progress.js';
 import { sendDocumentFileUpload } from '../bot/telegram-document.js';
+import { statusVideoCaption } from '../bot/status-caption.js';
 
 function cancelled(fence) {
   return fence && !isJobFenceActive(fence);
@@ -45,7 +46,7 @@ export async function processStatusFromLink(chatId, url, platform, fence = null)
       return;
     }
     await progress.complete();
-    await sendVideoFileUpload(chatId, prepared.filePath, 'Video ni dah ready untuk upload ke status ✅');
+    await sendVideoFileUpload(chatId, prepared.filePath, await statusVideoCaption());
     await progress.remove();
   } catch (error) {
     console.error('[status-hq/link] failed:', error?.code, error?.message);
@@ -171,7 +172,7 @@ export async function processStatusButton(callbackQuery, context = {}) {
         return true;
       }
       await progress.complete();
-      await sendVideoFileUpload(chatId, prepared.filePath, 'Video ni dah ready untuk upload ke status ✅');
+      await sendVideoFileUpload(chatId, prepared.filePath, await statusVideoCaption());
     }
 
     await progress.remove();
