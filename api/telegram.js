@@ -9,6 +9,12 @@ import {
 } from '../src/recovery.js';
 import { commandMenuText, START_TEXT } from '../src/bot/commands.js';
 import { handleConnectCommand, processAuditDelete, setMirrorWebhook } from '../src/bot/audit.js';
+import {
+  MEDIA_LIVE_WALLPAPER,
+  MEDIA_STATUS_HQ,
+  MEDIA_STATUS_HQ_ANDROID,
+} from '../src/bot/media-actions.js';
+import { handleTotalUserCommand, recordUsage } from '../src/bot/stats.js';
 import { processStatusProfileMenu } from '../src/features/status-hq-menu.js';
 import { processStatusAndroidButton } from '../src/features/status-hq-android.js';
 import { processStatusButton, processStatusFromLink } from '../src/features/status-hq.js';
@@ -47,8 +53,16 @@ function commandFromMessage(message) {
   return token.split('@')[0];
 }
 
+function hasDownloadableMedia(result) {
+  if (!result || result.cancelled) return false;
+  if (result.slideshow || result.sentVideo) return true;
+  if (Array.isArray(result?.media?.images) && result.media.images.length) return true;
+  return Array.isArray(result?.media?.audios) && result.media.audios.length > 0;
+}
+
 async function processMessage(message, context) {
   const chatId = message?.chat?.id;
+  const userId = message?.from?.id;
   const text = message?.text || message?.caption || '';
   if (!chatId) return;
 
@@ -95,21 +109,35 @@ async function processMessage(message, context) {
 
   if (statusMode) {
     await processStatusFromLink(chatId, url, platform, context.fence);
+    await recordUsage(userId, 'status_hq');
     return;
   }
 
   const result = await processStandardDownload({ chatId, url, platform, context, message });
   if (result?.slideshow) await sendTikTokSlideshowChoice(chatId, url);
+  if (hasDownloadableMedia(result)) await recordUsage(userId, 'download');
 }
 
 async function runWebhookUpdate(update, context) {
   const callbackQuery = update?.callback_query;
   if (callbackQuery) {
+    const action = String(callbackQuery?.data || '');
+    const userId = callbackQuery?.from?.id;
+
     if (await processAuditDelete(callbackQuery)) return;
     if (await processStatusProfileMenu(callbackQuery, context)) return;
-    if (await processStatusAndroidButton(callbackQuery, context)) return;
-    if (await processStatusButton(callbackQuery, context)) return;
-    if (await processLiveWallpaperButton(callbackQuery, context)) return;
+    if (await processStatusAndroidButton(callbackQuery, context)) {
+      if (action.startsWith(MEDIA_STATUS_HQ_ANDROID)) await recordUsage(userId, 'status_hq');
+      return;
+    }
+    if (await processStatusButton(callbackQuery, context)) {
+      if (action.startsWith(MEDIA_STATUS_HQ)) await recordUsage(userId, 'status_hq');
+      return;
+    }
+    if (await processLiveWallpaperButton(callbackQuery, context)) {
+      if (action.startsWith(MEDIA_LIVE_WALLPAPER)) await recordUsage(userId, 'live_wallpaper');
+      return;
+    }
     await processTikTokSlideshowChoice(callbackQuery, context);
     return;
   }
@@ -149,12 +177,24 @@ export default async function handler(req, res) {
     };
 
     const message = update?.message ?? update?.edited_message;
+    const callbackQuery = update?.callback_query;
+    const actor = callbackQuery?.from || message?.from;
+    const actorChatType = callbackQuery?.message?.chat?.type || message?.chat?.type;
+    if (actorChatType === 'private' && actor?.id) {
+      await recordUsage(actor.id);
+    }
+
     const command = commandFromMessage(message);
 
     if (command === '/menu') {
       const userId = message?.from?.id;
       await sendMessage(message.chat.id, commandMenuText(userId)).catch((error) => console.warn('Menu reply failed:', error?.message));
       return json(res, 200, { ok: true, menu: isResetAdmin(userId) ? 'owner' : 'user' });
+    }
+
+    if (command === '/totaluser') {
+      await handleTotalUserCommand(message, context);
+      return json(res, 200, { ok: true, stats: true });
     }
 
     if (command === '/reset') {
