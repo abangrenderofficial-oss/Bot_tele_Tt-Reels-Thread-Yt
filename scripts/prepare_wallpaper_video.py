@@ -632,6 +632,8 @@ def prepare_wallpaper_video(
             video_timescale,
             video_presentation_duration,
             metadata_leading_duration,
+            input_movie_timescale,
+            still_time_seconds,
         )
         cloned_tracks.append(clone)
         metadata_payloads.append(payload)
