@@ -22,6 +22,17 @@ function compactMediaSourceToken(sourceUrl = '') {
         if (/^[A-Za-z0-9_-]{4,40}$/.test(token)) return `vt:${token}`;
       }
     }
+
+    if (host === 'youtu.be' || host === 'www.youtu.be') {
+      const videoId = parsed.pathname.split('/').filter(Boolean)[0] || '';
+      if (/^[A-Za-z0-9_-]{6,20}$/.test(videoId)) return `yt:${videoId}`;
+    }
+
+    if (host === 'youtube.com' || host.endsWith('.youtube.com')) {
+      const pathId = parsed.pathname.match(/^\/(?:shorts|embed|live)\/([A-Za-z0-9_-]{6,20})/)?.[1] || '';
+      const videoId = pathId || parsed.searchParams.get('v') || '';
+      if (/^[A-Za-z0-9_-]{6,20}$/.test(videoId)) return `yt:${videoId}`;
+    }
   } catch {}
 
   return '';
@@ -52,7 +63,7 @@ export function mediaActionButtons(sourceUrl = '') {
   return {
     reply_markup: {
       inline_keyboard: [
-        [{ text: '📱 Status HQ', callback_data: callbackData(MEDIA_STATUS_HQ, sourceUrl) }],
+        [{ text: '📱 Status HQ', callback_data: callbackData(MEDIA_STATUS_HQ_MENU, sourceUrl) }],
         [{ text: '🍎 Live Wallpaper iPhone', callback_data: callbackData(MEDIA_LIVE_WALLPAPER, sourceUrl) }],
       ],
     },
@@ -95,6 +106,15 @@ export function galleryStatusProfileButtons(sourceMessageId = 0, fileSize = 0) {
   };
 }
 
+export function socialStatusProfileButtons(sourceUrl = '') {
+  return {
+    inline_keyboard: [
+      [{ text: '✨ Standard HQ', callback_data: callbackData(MEDIA_STATUS_HQ, sourceUrl) }],
+      [{ text: '🤖 Android Compatibility (Beta)', callback_data: callbackData(MEDIA_STATUS_HQ_ANDROID, sourceUrl) }],
+    ],
+  };
+}
+
 export function galleryMediaMeta(action, prefix) {
   const marker = `${prefix}|g:`;
   const raw = String(action || '');
@@ -122,6 +142,9 @@ export function callbackSourceUrl(action, prefix, caption = '') {
 
   const shortToken = embedded.match(/^vt:([A-Za-z0-9_-]{4,40})$/)?.[1] || '';
   if (shortToken) return `https://vt.tiktok.com/${shortToken}/`;
+
+  const youtubeId = embedded.match(/^yt:([A-Za-z0-9_-]{6,20})$/)?.[1] || '';
+  if (youtubeId) return `https://www.youtube.com/watch?v=${youtubeId}`;
 
   return extractFirstUrl(embedded);
 }
