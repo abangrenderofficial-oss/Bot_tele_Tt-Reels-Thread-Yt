@@ -12,6 +12,7 @@ import {
 } from '../bot/media-actions.js';
 import { localMediaLane } from '../bot/job-lanes.js';
 import { removeHeavyProgress, startHeavyStatusProgress, startStatusProgress } from '../bot/progress.js';
+import { statusVideoCaption } from '../bot/status-caption.js';
 
 function cancelled(fence) {
   return fence && !isJobFenceActive(fence);
@@ -120,9 +121,6 @@ export async function processStatusAndroidButton(callbackQuery, context = {}) {
     prepared = await localMediaLane(async () => {
       let socialSourceError = null;
 
-      // Social-link videos must prefer the original social source. Telegram's
-      // cloud Bot API getFile path can reject videos above its download limit
-      // even though the video message itself was delivered successfully.
       if (!gallery && sourceUrl) {
         try {
           return await prepareAndroidFromSocialSource(sourceUrl);
@@ -159,7 +157,7 @@ export async function processStatusAndroidButton(callbackQuery, context = {}) {
     await sendVideoFileUpload(
       chatId,
       prepared.filePath,
-      'Video Android Beta ni dah ready untuk upload ke status ✅',
+      await statusVideoCaption(),
     );
     await progress.remove();
   } catch (error) {
