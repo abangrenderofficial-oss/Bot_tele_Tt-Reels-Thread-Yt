@@ -73,7 +73,7 @@ export function galleryMediaActionButtons(sourceMessageId = 0, fileSize = 0) {
     reply_markup: {
       inline_keyboard: [
         [{ text: '📱 Status HQ', callback_data: `${MEDIA_STATUS_HQ}${suffix}` }],
-        [{ text: '🍎 Live Wallpaper iPhone', callback_data: MEDIA_LIVE_WALLPAPER }],
+        [{ text: '🍎 Live Wallpaper iPhone', callback_data: `${MEDIA_LIVE_WALLPAPER}${suffix}` }],
       ],
     },
   };
