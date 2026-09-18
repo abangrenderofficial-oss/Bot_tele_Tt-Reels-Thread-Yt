@@ -1,4 +1,5 @@
-import { readFile, stat } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -98,6 +99,14 @@ function appendFormExtra(form, extra = {}) {
   }
 }
 
+function normalizedRotation(stderr = '') {
+  const sideData = String(stderr).match(/rotation of\s+(-?\d+(?:\.\d+)?)\s+degrees/i);
+  const metadata = String(stderr).match(/\brotate\s*:\s*(-?\d+(?:\.\d+)?)/i);
+  const raw = Number(sideData?.[1] ?? metadata?.[1] ?? 0);
+  if (!Number.isFinite(raw)) return 0;
+  return ((Math.round(raw) % 360) + 360) % 360;
+}
+
 async function probeTelegramVideoMetadata(filePath) {
   if (!filePath || !ffmpegPath) return {};
   let stderr = '';
@@ -116,8 +125,12 @@ async function probeTelegramVideoMetadata(filePath) {
 
   const dimensions = stderr.match(/Video:[^\n]*?\b(\d{2,5})x(\d{2,5})\b/i);
   const durationMatch = stderr.match(/Duration:\s*(\d+):(\d{2}):(\d{2}(?:\.\d+)?)/i);
-  const width = dimensions ? Number(dimensions[1]) : 0;
-  const height = dimensions ? Number(dimensions[2]) : 0;
+  let width = dimensions ? Number(dimensions[1]) : 0;
+  let height = dimensions ? Number(dimensions[2]) : 0;
+  const rotation = normalizedRotation(stderr);
+  if ((rotation === 90 || rotation === 270) && width > 0 && height > 0) {
+    [width, height] = [height, width];
+  }
   const duration = durationMatch
     ? Math.max(1, Math.round((Number(durationMatch[1]) * 3600) + (Number(durationMatch[2]) * 60) + Number(durationMatch[3])))
     : 0;
@@ -127,6 +140,19 @@ async function probeTelegramVideoMetadata(filePath) {
     ...(height > 0 ? { height } : {}),
     ...(duration > 0 ? { duration } : {}),
   };
+}
+
+async function probeTelegramVideoBuffer(buffer, extension = 'mp4') {
+  if (!buffer?.length || !ffmpegPath) return {};
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'telegram-video-probe-'));
+  const safeExtension = String(extension || 'mp4').toLowerCase().replace(/[^a-z0-9]/g, '') || 'mp4';
+  const filePath = path.join(dir, `source.${safeExtension}`);
+  try {
+    await writeFile(filePath, buffer);
+    return await probeTelegramVideoMetadata(filePath);
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => {});
+  }
 }
 
 async function parseTelegramResponse(response, method) {
@@ -235,20 +261,28 @@ export async function sendVideoUpload(chatId, item, caption = '', extra = {}) {
     throw err;
   }
 
-  const buffer = await upstream.arrayBuffer();
-  if (buffer.byteLength > limit) {
-    const err = new Error(`Video is too large for the configured Telegram upload limit (${buffer.byteLength} bytes).`);
+  const arrayBuffer = await upstream.arrayBuffer();
+  if (arrayBuffer.byteLength > limit) {
+    const err = new Error(`Video is too large for the configured Telegram upload limit (${arrayBuffer.byteLength} bytes).`);
     err.code = 'TELEGRAM_FILE_TOO_LARGE';
     throw err;
   }
 
   const contentType = upstream.headers.get('content-type') || 'video/mp4';
   const extension = extensionFor(item, contentType);
+  const buffer = Buffer.from(arrayBuffer);
+  const probedMetadata = await probeTelegramVideoBuffer(buffer, extension).catch((error) => {
+    console.warn('[telegram/video-probe] failed:', error?.message);
+    return {};
+  });
   const form = new FormData();
   form.set('chat_id', String(chatId));
   form.set('caption', caption.slice(0, 1024));
   form.set('supports_streaming', 'true');
-  appendFormExtra(form, extra);
+  appendFormExtra(form, {
+    ...extra,
+    ...probedMetadata,
+  });
   form.set('video', new Blob([buffer], { type: contentType }), `video.${extension}`);
 
   const response = await fetch(telegramEndpoint('sendVideo'), {
@@ -279,8 +313,8 @@ export async function sendVideoFileUpload(chatId, filePath, caption = '', extra 
   form.set('caption', caption.slice(0, 1024));
   form.set('supports_streaming', 'true');
   appendFormExtra(form, {
-    ...probedMetadata,
     ...extra,
+    ...probedMetadata,
   });
   form.set('video', new Blob([buffer], { type: contentType }), `video.${extension}`);
 
