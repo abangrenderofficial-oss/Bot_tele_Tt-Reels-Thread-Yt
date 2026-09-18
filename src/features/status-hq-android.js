@@ -1,13 +1,39 @@
 import { prepareWhatsAppStatusAndroidHQ } from '../status-hq-android.js';
+import { detectPlatform } from '../platform.js';
 import { getTelegramFileSource, sendChatAction, sendMessage, sendVideoFileUpload, telegram } from '../telegram.js';
 import { dispatchHeavyMediaJob, heavyVideoLimitBytes, heavyWorkerConfigured, shouldUseHeavyWorker } from '../heavy-worker-dispatch.js';
 import { isJobFenceActive } from '../recovery.js';
-import { MEDIA_STATUS_HQ_ANDROID, claimMediaButtons, galleryMediaMeta } from '../bot/media-actions.js';
+import { chooseBestVideo, resolveMedia } from '../bot/media-resolver.js';
+import {
+  MEDIA_STATUS_HQ_ANDROID,
+  callbackSourceUrl,
+  claimMediaButtons,
+  galleryMediaMeta,
+} from '../bot/media-actions.js';
 import { localMediaLane } from '../bot/job-lanes.js';
 import { removeHeavyProgress, startHeavyStatusProgress, startStatusProgress } from '../bot/progress.js';
 
 function cancelled(fence) {
   return fence && !isJobFenceActive(fence);
+}
+
+async function prepareAndroidFromSocialSource(sourceUrl) {
+  const platform = detectPlatform(sourceUrl);
+  if (!platform) {
+    const error = new Error('Android Beta could not detect the social source platform.');
+    error.code = 'STATUS_ANDROID_PLATFORM_UNKNOWN';
+    throw error;
+  }
+
+  const media = await resolveMedia(platform, sourceUrl);
+  const best = chooseBestVideo(media?.videos || []);
+  if (!best?.url) {
+    const error = new Error('Android Beta could not resolve a usable social source video.');
+    error.code = 'STATUS_ANDROID_SOURCE_NOT_FOUND';
+    throw error;
+  }
+
+  return prepareWhatsAppStatusAndroidHQ({ video: best });
 }
 
 export async function processStatusAndroidButton(callbackQuery, context = {}) {
@@ -18,7 +44,9 @@ export async function processStatusAndroidButton(callbackQuery, context = {}) {
   const chatId = callbackQuery?.message?.chat?.id;
   const video = callbackQuery?.message?.video || null;
   const videoFileId = video?.file_id;
+  const caption = callbackQuery?.message?.caption || '';
   const gallery = galleryMediaMeta(action, MEDIA_STATUS_HQ_ANDROID);
+  const sourceUrl = gallery ? '' : callbackSourceUrl(action, MEDIA_STATUS_HQ_ANDROID, caption);
   const fileSize = Number(video?.file_size || gallery?.fileSize || 0);
   const heavyCandidate = Boolean(gallery && videoFileId && shouldUseHeavyWorker({ file_size: fileSize }));
   if (!chatId) return true;
@@ -89,11 +117,39 @@ export async function processStatusAndroidButton(callbackQuery, context = {}) {
   let prepared = null;
   const progress = await startStatusProgress(chatId);
   try {
-    // For Gallery and social-link results alike, reuse Telegram's existing
-    // video file_id. This avoids a second social download and keeps the Android
-    // profile isolated from the platform resolver/downloader path.
-    const telegramVideo = await getTelegramFileSource(videoFileId);
-    prepared = await localMediaLane(() => prepareWhatsAppStatusAndroidHQ({ video: telegramVideo }));
+    prepared = await localMediaLane(async () => {
+      let socialSourceError = null;
+
+      // Social-link videos must prefer the original social source. Telegram's
+      // cloud Bot API getFile path can reject videos above its download limit
+      // even though the video message itself was delivered successfully.
+      if (!gallery && sourceUrl) {
+        try {
+          return await prepareAndroidFromSocialSource(sourceUrl);
+        } catch (error) {
+          socialSourceError = error;
+          console.warn(
+            '[status-hq/android] social source failed, trying Telegram file fallback:',
+            error?.code,
+            error?.message,
+          );
+        }
+      }
+
+      try {
+        const telegramVideo = await getTelegramFileSource(videoFileId);
+        return await prepareWhatsAppStatusAndroidHQ({ video: telegramVideo });
+      } catch (telegramFileError) {
+        console.warn(
+          '[status-hq/android] Telegram fallback failed:',
+          telegramFileError?.code,
+          telegramFileError?.message,
+        );
+        if (socialSourceError) throw socialSourceError;
+        throw telegramFileError;
+      }
+    });
+
     if (cancelled(fence)) {
       await progress.remove();
       return true;
@@ -110,7 +166,7 @@ export async function processStatusAndroidButton(callbackQuery, context = {}) {
     console.error('[status-hq/android] failed:', error?.code, error?.message);
     await progress.remove();
     if (!cancelled(fence)) {
-      await sendMessage(chatId, '❌ Android Compatibility Beta tak dapat disiapkan. Hantar video semula dan cuba lagi.').catch(() => {});
+      await sendMessage(chatId, '❌ Android Compatibility Beta tak dapat disiapkan. Hantar video/link semula dan cuba lagi.').catch(() => {});
     }
   } finally {
     if (prepared?.cleanup) await prepared.cleanup().catch(() => {});
