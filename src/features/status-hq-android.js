@@ -33,7 +33,7 @@ async function prepareAndroidFromSocialSource(sourceUrl) {
     throw error;
   }
 
-  return prepareWhatsAppStatusAndroidHQ({ video: best });
+  return prepareWhatsAppStatusAndroidHQ({ video: best, sourceUrl, platform });
 }
 
 export async function processStatusAndroidButton(callbackQuery, context = {}) {
