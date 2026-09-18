@@ -61,7 +61,12 @@ def progress_text(percent):
     value = max(1, min(100, int(round(percent))))
     filled = 10 if value >= 100 else min(9, value // 10)
     bar = '▰' * filled + '▱' * (10 - filled)
-    title = '🍎 Live Wallpaper sedang diproses...' if ACTION == 'live_wallpaper' else '🔋 Status HQ sedang diproses...'
+    if ACTION == 'live_wallpaper':
+        title = '🍎 Live Wallpaper sedang diproses...'
+    elif ACTION == 'status_hq_android':
+        title = '🤖 Status HQ Android Beta sedang diproses...'
+    else:
+        title = '🔋 Status HQ sedang diproses...'
     return f'{title}\n{bar} {value}%'
 
 
@@ -166,38 +171,87 @@ def target_dimensions(width, height, video_kbps, live=False):
     return even_floor(width * scale), even_floor(height * scale)
 
 
-def status_plan(probe):
+def status_tier(video_kbps, android=False):
+    if android:
+        return 720
+    if video_kbps >= 2400:
+        return 1080
+    if video_kbps >= 1050:
+        return 720
+    if video_kbps >= 650:
+        return 540
+    return 360
+
+
+def status_plan(probe, android=False):
     duration = max(1.0, probe['duration'])
     target_bytes = int(43.5 * MB)
     audio_kbps = 128
     total_kbps = int((target_bytes * 8 / duration / 1000) * 0.90)
-    video_kbps = max(220, min(5000, total_kbps - audio_kbps - 70))
-    dims = target_dimensions(probe['width'], probe['height'], video_kbps)
-    return {'video_kbps': video_kbps, 'audio_kbps': audio_kbps, 'dims': dims}
+    max_video_kbps = 2800 if android else 5000
+    video_kbps = max(220, min(max_video_kbps, total_kbps - audio_kbps - 70))
+    return {
+        'video_kbps': video_kbps,
+        'audio_kbps': audio_kbps,
+        'tier': status_tier(video_kbps, android=android),
+        'android': android,
+    }
 
 
-def encode_status(input_path, output_path, probe):
-    plan = status_plan(probe)
+def status_scale_filter(tier, android=False):
+    if android:
+        landscape_w, landscape_h = 1280, 720
+        portrait_w, portrait_h = 720, 1280
+    elif tier == 1080:
+        landscape_w, landscape_h = 1920, 1080
+        portrait_w, portrait_h = 1080, 1920
+    elif tier == 720:
+        landscape_w, landscape_h = 1280, 720
+        portrait_w, portrait_h = 720, 1280
+    elif tier == 540:
+        landscape_w, landscape_h = 960, 540
+        portrait_w, portrait_h = 540, 960
+    else:
+        landscape_w, landscape_h = 640, 360
+        portrait_w, portrait_h = 360, 640
+
+    max_w = f'if(gte(iw,ih),{landscape_w},{portrait_w})'
+    max_h = f'if(gte(iw,ih),{landscape_h},{portrait_h})'
+    fit = f'min(1,min(({max_w})/iw,({max_h})/ih))'
+    return (
+        f"scale=w='max(2,trunc(iw*{fit}/2)*2)':"
+        f"h='max(2,trunc(ih*{fit}/2)*2)':flags=lanczos"
+    )
+
+
+def encode_status(input_path, output_path, probe, android=False):
+    plan = status_plan(probe, android=android)
     safe_limit = int(47 * MB)
     for index, bitrate_scale in enumerate((1.0, 0.84, 0.70), 1):
         if output_path.exists():
             output_path.unlink()
         video_kbps = max(180, int(plan['video_kbps'] * bitrate_scale))
-        maxrate = max(video_kbps, int(video_kbps * 1.15))
+        maxrate = max(video_kbps, int(video_kbps * (1.12 if android else 1.15)))
         bufsize = max(1000, maxrate * 2)
-        cmd = ['ffmpeg', '-y', '-hide_banner', '-loglevel', 'error', '-i', str(input_path), '-map', '0:v:0', '-map', '0:a:0?']
-        filters = []
-        if plan['dims']:
-            width, height = plan['dims']
-            filters.append(f'scale={width}:{height}:flags=lanczos')
-        filters.append('setsar=1')
+        cmd = [
+            'ffmpeg', '-y', '-hide_banner', '-loglevel', 'error', '-nostdin',
+            '-filter_threads', '1', '-i', str(input_path), '-map', '0:v:0', '-map', '0:a:0?'
+        ]
+        filters = [status_scale_filter(plan['tier'], android=android), 'setsar=1']
+        if android:
+            filters.append('fps=30')
         cmd += ['-vf', ','.join(filters)]
         cmd += [
             '-c:v', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p',
             '-b:v', f'{video_kbps}k', '-maxrate', f'{maxrate}k', '-bufsize', f'{bufsize}k',
-            '-profile:v', 'high', '-level:v', '4.1',
+            '-profile:v', 'high', '-level:v', '3.1' if android else '4.1',
+        ]
+        if android:
+            cmd += ['-g', '60', '-keyint_min', '60', '-sc_threshold', '0']
+        cmd += [
             '-c:a', 'aac', '-ar', '44100', '-ac', '2', '-b:a', f"{plan['audio_kbps']}k",
-            '-movflags', '+faststart', '-map_metadata', '-1', str(output_path),
+            '-movflags', '+faststart', '-metadata:s:v:0', 'rotate=0', '-map_metadata', '-1',
+            '-threads', '2', str(output_path),
         ]
         run(cmd, timeout=1200)
         if output_path.stat().st_size <= safe_limit:
@@ -245,11 +299,24 @@ def encode_live_wallpaper(input_path, video_path, photo_path, probe):
     )
 
 
-def send_status_video(path):
+def send_status_video(path, android=False):
+    metadata = probe_video(path)
+    data = {
+        'chat_id': str(CHAT_ID),
+        'caption': (
+            'Video Android Beta ni dah ready untuk upload ke status ✅'
+            if android
+            else 'Video ni dah ready untuk upload ke status ✅'
+        ),
+        'supports_streaming': 'true',
+        'width': str(int(metadata.get('width') or 0)),
+        'height': str(int(metadata.get('height') or 0)),
+        'duration': str(max(1, int(round(metadata.get('duration') or 1)))),
+    }
     with path.open('rb') as handle:
         telegram_call(
             'sendVideo',
-            {'chat_id': str(CHAT_ID), 'caption': 'Video ni dah ready untuk upload ke status ✅', 'supports_streaming': 'true'},
+            data,
             {'video': ('status-hq.mp4', handle, 'video/mp4')},
             timeout=300,
         )
@@ -305,12 +372,18 @@ def main():
             encode_live_wallpaper(source, live_video, cover, probe)
             set_progress(88)
             send_live_photo(live_video, cover)
+        elif ACTION == 'status_hq_android':
+            set_progress(42)
+            output = temp / 'status-hq-android.mp4'
+            encode_status(source, output, probe, android=True)
+            set_progress(88)
+            send_status_video(output, android=True)
         else:
             set_progress(42)
             output = temp / 'status-hq.mp4'
-            encode_status(source, output, probe)
+            encode_status(source, output, probe, android=False)
             set_progress(88)
-            send_status_video(output)
+            send_status_video(output, android=False)
 
         set_progress(100)
         finish_progress()
