@@ -115,3 +115,56 @@ jobs:
           print('paired cdsc=', data.count(b'cdsc'))
           PY
           ls -lh /tmp/paired.jpg /tmp/paired.mov
+
+      - name: Regression test 0.9s Gallery video
+        shell: bash
+        run: |
+          ffmpeg -y -hide_banner -loglevel error \
+            -f lavfi -i 'testsrc2=size=720x1280:rate=30' \
+            -t 0.9 \
+            -c:v libx264 -pix_fmt yuv420p -b:v 1200k \
+            /tmp/short-source.mp4
+
+          ffmpeg -y -hide_banner -loglevel error \
+            -i /tmp/short-source.mp4 -t 0.9 \
+            -map 0:v:0 -an \
+            -vf 'scale=720:1280:flags=lanczos,setsar=1,fps=60,setpts=PTS-STARTPTS' \
+            -c:v hevc_videotoolbox -profile:v main -pix_fmt yuv420p \
+            -tag:v hvc1 -b:v 1800k -g 60 \
+            -map_metadata -1 -video_track_timescale 600 \
+            -f mov /tmp/short-raw.mov
+
+          ffmpeg -y -hide_banner -loglevel error \
+            -ss 0 -i /tmp/short-raw.mov -frames:v 1 -q:v 2 /tmp/short-raw.jpg
+
+          python3 scripts/prepare_wallpaper_video.py /tmp/short-raw.mov /tmp/short-prepared.mov
+          /tmp/apple-live-pair /tmp/short-raw.jpg /tmp/short-prepared.mov /tmp/short-paired.jpg /tmp/short-paired.mov
+
+          python3 - <<'PY'
+          import json
+          import subprocess
+          from pathlib import Path
+
+          payload = json.loads(subprocess.check_output([
+              'ffprobe', '-v', 'error', '-select_streams', 'v:0',
+              '-show_entries',
+              'stream=width,height,r_frame_rate,time_base,codec_name,codec_tag_string:format=duration',
+              '-of', 'json', '/tmp/short-paired.mov'
+          ], text=True))
+          stream = payload['streams'][0]
+          duration = float(payload['format']['duration'])
+          data = Path('/tmp/short-paired.mov').read_bytes()
+
+          assert stream['width'] == 720
+          assert stream['height'] == 1280
+          assert stream['codec_name'] == 'hevc'
+          assert stream['codec_tag_string'] == 'hvc1'
+          assert stream['r_frame_rate'] == '60/1'
+          assert stream['time_base'] == '1/600'
+          assert 0.80 <= duration <= 1.00, duration
+          assert data.count(b'cdsc') >= 2
+          assert b'com.apple.quicktime.live-photo-info' in data
+          assert b'com.apple.quicktime.live-photo-still-image-transform' in data
+          assert b'com.apple.quicktime.still-image-time' in data
+          print('short_wallpaper_ok duration=', duration, 'cdsc=', data.count(b'cdsc'))
+          PY
