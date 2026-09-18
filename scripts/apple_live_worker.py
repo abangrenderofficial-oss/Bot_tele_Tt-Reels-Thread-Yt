@@ -27,6 +27,7 @@ BOT_API_BASE = os.environ.get('TELEGRAM_API_BASE_URL', 'https://api.telegram.org
 # original duration when Telegram can carry it. Telegram's Live Photo video
 # transport rejects clips above 10 seconds, so we cap at 9.8s for headroom.
 MIN_WALLPAPER_SOURCE_SECONDS = 0.5
+MIN_WALLPAPER_OUTPUT_SECONDS = 1.5
 MAX_TELEGRAM_LIVE_SECONDS = 9.8
 TARGET_MOTION_BYTES = 6.5 * MB
 MAX_RAW_MOTION_BYTES = 9 * MB
@@ -264,15 +265,18 @@ def validate_wallpaper_video(path, expected_duration=None):
     return profile
 
 
-def encode_wallpaper_attempt(source, output, probe, duration, video_kbps):
+def encode_wallpaper_attempt(source, output, probe, duration, video_kbps, pad_seconds=0.0):
     if output.exists():
         output.unlink()
+    video_filter = wallpaper_filter(probe)
+    if pad_seconds > 0:
+        video_filter += f',tpad=stop_mode=clone:stop_duration={pad_seconds:.6f}'
     run(
         [
             'ffmpeg', '-y', '-hide_banner', '-loglevel', 'error',
             '-i', str(source),
             '-t', f'{duration:.6f}', '-map', '0:v:0', '-an',
-            '-vf', wallpaper_filter(probe),
+            '-vf', video_filter,
             '-c:v', 'hevc_videotoolbox', '-profile:v', 'main', '-pix_fmt', 'yuv420p',
             '-tag:v', OUTPUT_CODEC_TAG, '-b:v', f'{video_kbps}k',
             '-g', str(OUTPUT_FPS),
@@ -308,8 +312,14 @@ def encode_motion_and_cover(source, raw_movie, raw_cover, probe):
     # longer clips are capped to 9.8s instead of being rejected as VIDEO_INVALID.
     clip_start = 0.0
     source_duration = probe['duration']
-    duration = min(source_duration, MAX_TELEGRAM_LIVE_SECONDS)
-    duration_mode = 'original' if source_duration <= MAX_TELEGRAM_LIVE_SECONDS else 'telegram_cap'
+    if source_duration < MIN_WALLPAPER_OUTPUT_SECONDS:
+        duration = MIN_WALLPAPER_OUTPUT_SECONDS
+        pad_seconds = duration - source_duration
+        duration_mode = 'short_clip_tail_pad'
+    else:
+        duration = min(source_duration, MAX_TELEGRAM_LIVE_SECONDS)
+        pad_seconds = 0.0
+        duration_mode = 'original' if source_duration <= MAX_TELEGRAM_LIVE_SECONDS else 'telegram_cap'
 
     # Keep one deterministic output profile on every run. VideoToolbox bitrate can
     # vary a little between runners, so retry the exact same profile at a lower
@@ -324,7 +334,7 @@ def encode_motion_and_cover(source, raw_movie, raw_cover, probe):
         )
         try:
             profile = encode_wallpaper_attempt(
-                source, raw_movie, probe, duration, video_kbps
+                source, raw_movie, probe, duration, video_kbps, pad_seconds
             )
         except Exception:
             if attempt >= ENCODE_MAX_ATTEMPTS:
@@ -375,6 +385,7 @@ def encode_motion_and_cover(source, raw_movie, raw_cover, probe):
         'duration': duration,
         'source_duration': source_duration,
         'duration_mode': duration_mode,
+        'pad_seconds': pad_seconds,
         'video_kbps': video_kbps,
     }
 
