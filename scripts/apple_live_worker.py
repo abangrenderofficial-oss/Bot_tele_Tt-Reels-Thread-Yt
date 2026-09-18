@@ -18,6 +18,8 @@ VIDEO_FILE_ID = os.environ.get('HEAVY_VIDEO_FILE_ID', '').strip()
 FILE_SIZE = int(os.environ.get('HEAVY_FILE_SIZE', '0') or 0)
 PROGRESS_MESSAGE_ID = int(os.environ.get('HEAVY_PROGRESS_MESSAGE_ID', '0') or 0)
 SOURCE_MESSAGE_ID = int(os.environ.get('HEAVY_SOURCE_MESSAGE_ID', '0') or 0)
+SOURCE_KIND = os.environ.get('HEAVY_SOURCE_KIND', 'link').strip().lower()
+IS_GALLERY_UPLOAD = SOURCE_KIND == 'gallery'
 MAX_INPUT_MB = int(os.environ.get('HEAVY_VIDEO_MAX_MB', '500') or 500)
 MAX_INPUT_BYTES = MAX_INPUT_MB * MB
 BOT_API_BASE = os.environ.get('TELEGRAM_API_BASE_URL', 'https://api.telegram.org').rstrip('/')
@@ -29,6 +31,8 @@ BOT_API_BASE = os.environ.get('TELEGRAM_API_BASE_URL', 'https://api.telegram.org
 MIN_WALLPAPER_SOURCE_SECONDS = 0.5
 MIN_WALLPAPER_OUTPUT_SECONDS = 1.5
 MAX_TELEGRAM_LIVE_SECONDS = 9.8
+GALLERY_STILL_TIME_MAX_SECONDS = 1.8
+GALLERY_STILL_TIME_END_MARGIN = 0.05
 TARGET_MOTION_BYTES = 6.5 * MB
 MAX_RAW_MOTION_BYTES = 9 * MB
 MAX_PAIRED_MOTION_BYTES = 10 * MB
@@ -365,10 +369,20 @@ def encode_motion_and_cover(source, raw_movie, raw_cover, probe):
             f'{raw_movie.stat().st_size / MB:.2f}MB.'
         )
 
-    # Device-verified wallpaper pipelines use a cover continuous with the
-    # opening motion frame. Midpoint covers can make the Lock Screen animation
-    # control unavailable even when the Live Photo pair itself is valid.
-    still_at = 0.0
+    # Keep the proven link-downloader lane untouched. Only Gallery uploads
+    # move photoTime deeper into the clip so iOS does not stop the wallpaper
+    # motion around the template's original ~0.4s still-image-time.
+    if IS_GALLERY_UPLOAD:
+        real_motion_end = min(source_duration, duration)
+        still_at = max(
+            0.0,
+            min(
+                GALLERY_STILL_TIME_MAX_SECONDS,
+                real_motion_end - GALLERY_STILL_TIME_END_MARGIN,
+            ),
+        )
+    else:
+        still_at = 0.0
     run(
         [
             'ffmpeg', '-y', '-hide_banner', '-loglevel', 'error',
@@ -386,21 +400,26 @@ def encode_motion_and_cover(source, raw_movie, raw_cover, probe):
         'source_duration': source_duration,
         'duration_mode': duration_mode,
         'pad_seconds': pad_seconds,
+        'still_time': still_at,
+        'source_kind': SOURCE_KIND,
         'video_kbps': video_kbps,
     }
 
 
 
-def prepare_wallpaper_metadata(raw_movie, prepared_movie):
+def prepare_wallpaper_metadata(raw_movie, prepared_movie, still_time_seconds=None):
     # Inject the device-verified timed metadata template:
     # live-photo-info + still-image-time/transform tracks with cdsc references
-    # back to the video track. This is the structure iOS Lock Screen uses beyond
-    # ordinary Live Photo recognition.
+    # back to the video track. Gallery uploads may retime only the still-image
+    # event; link-downloader Live Wallpaper jobs keep the proven template timing.
+    command = [
+        'python3', 'scripts/prepare_wallpaper_video.py',
+        str(raw_movie), str(prepared_movie),
+    ]
+    if IS_GALLERY_UPLOAD and still_time_seconds is not None:
+        command.extend(['--still-time-seconds', f'{still_time_seconds:.6f}'])
     run(
-        [
-            'python3', 'scripts/prepare_wallpaper_video.py',
-            str(raw_movie), str(prepared_movie),
-        ],
+        command,
         timeout=180,
     )
     if not prepared_movie.exists() or prepared_movie.stat().st_size <= 0:
@@ -545,7 +564,8 @@ def download_source(path):
 def main():
     require_config()
     print(
-        f'apple live worker input={FILE_SIZE} chat={CHAT_ID} duration_policy=original_up_to_9.8s',
+        f'apple live worker input={FILE_SIZE} chat={CHAT_ID} source_kind={SOURCE_KIND} '
+        'duration_policy=original_up_to_9.8s',
         flush=True,
     )
 
@@ -567,7 +587,11 @@ def main():
         print(f'wallpaper_profile={clip}', flush=True)
 
         set_progress(60)
-        prepare_wallpaper_metadata(raw_movie, prepared_movie)
+        prepare_wallpaper_metadata(
+            raw_movie,
+            prepared_movie,
+            still_time_seconds=clip.get('still_time'),
+        )
         print(
             f'wallpaper metadata movie={prepared_movie.stat().st_size}',
             flush=True,
