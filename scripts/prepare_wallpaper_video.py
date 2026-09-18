@@ -405,8 +405,6 @@ def clone_metadata_track(
             total_duration // video_samples,
             video_presentation_duration,
             metadata_leading_duration,
-            input_movie_timescale,
-            still_time_seconds,
         )
     elif still_time_seconds is not None:
         still_ticks = set_still_image_time_timing(
