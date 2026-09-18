@@ -137,17 +137,13 @@ jobs:
           ffmpeg -y -hide_banner -loglevel error \
             -ss 0 -i /tmp/short-raw.mov -frames:v 1 -q:v 2 /tmp/short-raw.jpg
 
-          # Default path stays untouched for Live Wallpaper buttons attached
-          # to downloaded-link videos.
-          python3 scripts/prepare_wallpaper_video.py /tmp/short-raw.mov /tmp/short-link-prepared.mov
-
-          # Gallery upload path moves only still-image-time to the end of the
-          # source motion window (0.85s for a 0.9s clip).
+          # Gallery and link jobs must share the same device-verified metadata
+          # timing. The cover is the decoded opening frame; no custom key-photo
+          # retiming is allowed here.
           python3 scripts/prepare_wallpaper_video.py \
-            /tmp/short-raw.mov /tmp/short-gallery-prepared.mov \
-            --still-time-seconds 0.85
+            /tmp/short-raw.mov /tmp/short-prepared.mov
 
-          /tmp/apple-live-pair /tmp/short-raw.jpg /tmp/short-gallery-prepared.mov /tmp/short-paired.jpg /tmp/short-paired.mov
+          /tmp/apple-live-pair /tmp/short-raw.jpg /tmp/short-prepared.mov /tmp/short-paired.jpg /tmp/short-paired.mov
 
           python3 - <<'PY'
           import importlib.util
@@ -185,11 +181,12 @@ jobs:
               )[0]
               return leading / movie_scale
 
-          link_still = still_time_seconds('/tmp/short-link-prepared.mov')
-          gallery_still = still_time_seconds('/tmp/short-gallery-prepared.mov')
-          print('link_still=', link_still, 'gallery_still=', gallery_still)
-          assert link_still < 0.60, link_still
-          assert abs(gallery_still - 0.85) <= 0.01, gallery_still
+          prepared_still = still_time_seconds('/tmp/short-prepared.mov')
+          paired_still = still_time_seconds('/tmp/short-paired.mov')
+          print('prepared_still=', prepared_still, 'paired_still=', paired_still)
+          # The embedded, device-verified template places the event at ~0.417s.
+          assert 0.40 <= prepared_still <= 0.45, prepared_still
+          assert abs(paired_still - prepared_still) <= 0.001, (prepared_still, paired_still)
 
           payload = json.loads(subprocess.check_output([
               'ffprobe', '-v', 'error', '-select_streams', 'v:0',
