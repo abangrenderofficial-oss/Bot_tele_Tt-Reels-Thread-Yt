@@ -1,17 +1,18 @@
 import { sendMessage, telegram } from '../telegram.js';
 
-function statusProgressText(percent) {
+function videoProgressText(percent) {
   const value = Math.max(1, Math.min(100, Math.round(Number(percent) || 1)));
   const filled = value >= 100 ? 10 : Math.min(9, Math.floor(value / 10));
   const bar = `${'▰'.repeat(filled)}${'▱'.repeat(10 - filled)}`;
-  return `🔋 Status HQ sedang diproses...\n${bar} ${value}%`;
+  const title = value >= 100 ? 'Your Video Is Ready ✅' : 'Your Video Is on Its Way...';
+  return `${title}\n\n${bar} ${value}% 🔋`;
 }
 
-function liveProgressText(percent) {
+function imageProgressText(percent) {
   const value = Math.max(1, Math.min(100, Math.round(Number(percent) || 1)));
   const filled = value >= 100 ? 10 : Math.min(9, Math.floor(value / 10));
   const bar = `${'▰'.repeat(filled)}${'▱'.repeat(10 - filled)}`;
-  return `🍎 Live Wallpaper sedang diproses...\n${bar} ${value}%`;
+  return `📱 Status HQ sedang diproses...\n${bar} ${value}%`;
 }
 
 async function startProgress(chatId, textBuilder) {
@@ -61,15 +62,19 @@ async function startProgress(chatId, textBuilder) {
 }
 
 export function startStatusProgress(chatId) {
-  return startProgress(chatId, statusProgressText);
+  return startProgress(chatId, videoProgressText);
+}
+
+export function startImageStatusProgress(chatId) {
+  return startProgress(chatId, imageProgressText);
 }
 
 export async function startHeavyStatusProgress(chatId) {
-  return sendMessage(chatId, statusProgressText(1)).catch(() => null);
+  return sendMessage(chatId, videoProgressText(1)).catch(() => null);
 }
 
 export async function startHeavyLiveProgress(chatId) {
-  return sendMessage(chatId, liveProgressText(1)).catch(() => null);
+  return sendMessage(chatId, videoProgressText(1)).catch(() => null);
 }
 
 export async function removeHeavyProgress(chatId, messageId) {
