@@ -22,6 +22,12 @@ MAX_INPUT_MB = int(os.environ.get('HEAVY_VIDEO_MAX_MB', '500') or 500)
 MAX_INPUT_BYTES = MAX_INPUT_MB * MB
 BOT_API_BASE = os.environ.get('TELEGRAM_API_BASE_URL', 'https://api.telegram.org').rstrip('/')
 
+try:
+    SPEED = float(os.environ.get('HEAVY_SPEED', '1') or 1)
+except ValueError:
+    SPEED = 1.0
+SPEED = max(0.5, min(2.0, SPEED))
+
 # This worker is intentionally isolated from Status HQ and the normal downloader.
 # For the current iPhone Live Wallpaper experiment we keep the source video's
 # original duration when Telegram can carry it. Telegram's Live Photo video
@@ -189,12 +195,16 @@ def target_dimensions(width, height):
 
 def wallpaper_filter(probe):
     width, height, needs_portrait_crop = target_dimensions(probe['width'], probe['height'])
+    speed_expr = f'(PTS-STARTPTS)/{SPEED:.4f}'
     if needs_portrait_crop:
         return (
             'scale=1080:1920:force_original_aspect_ratio=increase:flags=lanczos,'
-            'crop=1080:1920,setsar=1,fps={OUTPUT_FPS},setpts=PTS-STARTPTS'
+            f'crop=1080:1920,setsar=1,setpts={speed_expr},fps={OUTPUT_FPS}'
         )
-    return f'scale={width}:{height}:flags=lanczos,setsar=1,fps={OUTPUT_FPS},setpts=PTS-STARTPTS'
+    return (
+        f'scale={width}:{height}:flags=lanczos,setsar=1,'
+        f'setpts={speed_expr},fps={OUTPUT_FPS}'
+    )
 
 
 
@@ -308,8 +318,17 @@ def encode_motion_and_cover(source, raw_movie, raw_cover, probe):
     # longer clips are capped to 9.8s instead of being rejected as VIDEO_INVALID.
     clip_start = 0.0
     source_duration = probe['duration']
-    duration = min(source_duration, MAX_TELEGRAM_LIVE_SECONDS)
-    duration_mode = 'original' if source_duration <= MAX_TELEGRAM_LIVE_SECONDS else 'telegram_cap'
+    adjusted_duration = source_duration / SPEED
+    if adjusted_duration < MIN_WALLPAPER_SOURCE_SECONDS:
+        raise RuntimeError(
+            'Speed yang dipilih jadikan motion kurang 1 saat. Pilih speed yang lebih perlahan.'
+        )
+    duration = min(adjusted_duration, MAX_TELEGRAM_LIVE_SECONDS)
+    duration_mode = (
+        'speed_adjusted'
+        if adjusted_duration <= MAX_TELEGRAM_LIVE_SECONDS
+        else 'speed_adjusted_telegram_cap'
+    )
 
     # Keep one deterministic output profile on every run. VideoToolbox bitrate can
     # vary a little between runners, so retry the exact same profile at a lower
@@ -374,7 +393,9 @@ def encode_motion_and_cover(source, raw_movie, raw_cover, probe):
         'clip_start': clip_start,
         'duration': duration,
         'source_duration': source_duration,
+        'adjusted_duration': adjusted_duration,
         'duration_mode': duration_mode,
+        'speed': SPEED,
         'video_kbps': video_kbps,
     }
 
@@ -431,7 +452,7 @@ def send_live_photo(movie_path, photo_path):
                     data={
                         'chat_id': str(CHAT_ID),
                         'caption': (
-                            'Live Wallpaper iPhone dah siap 🍎\n'
+                            f'Live Wallpaper iPhone dah siap 🍎 • Speed {SPEED:g}×\n'
                             'Simpan ke Photos, kemudian cuba Use as Wallpaper.'
                         ),
                     },
@@ -534,7 +555,8 @@ def download_source(path):
 def main():
     require_config()
     print(
-        f'apple live worker input={FILE_SIZE} chat={CHAT_ID} duration_policy=original_up_to_9.8s',
+        f'apple live worker input={FILE_SIZE} chat={CHAT_ID} speed={SPEED:g} '
+        'duration_policy=speed_adjusted_up_to_9.8s',
         flush=True,
     )
 
