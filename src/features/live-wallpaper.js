@@ -72,6 +72,7 @@ export async function processLiveWallpaperButton(callbackQuery, context = {}) {
       videoFileId: fileId,
       fileSize,
       action: 'live_wallpaper',
+      sourceKind: gallery ? 'gallery' : 'link',
       progressMessageId: progressMessage?.message_id || 0,
       sourceMessageId: callbackMessageId || gallery?.sourceMessageId || 0,
     });
