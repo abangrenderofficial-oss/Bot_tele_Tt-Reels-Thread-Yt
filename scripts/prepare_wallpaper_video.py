@@ -323,6 +323,22 @@ def set_live_photo_info_timing(
     set_metadata_edit_list(data, track, presentation_duration_value, leading_duration)
 
 
+def set_still_image_time_timing(
+    data: bytearray,
+    track: Box,
+    still_time_seconds: float,
+    movie_timescale_value: int,
+) -> int:
+    """Move the still-image-time event without changing the metadata payload."""
+    if movie_timescale_value <= 0:
+        raise MovPreparationError("Movie timescale must be positive")
+    leading_duration = max(0, round(still_time_seconds * movie_timescale_value))
+    event_duration = 1
+    set_track_duration(data, track, leading_duration + event_duration)
+    set_metadata_edit_list(data, track, event_duration, leading_duration)
+    return leading_duration
+
+
 def set_single_chunk_offset(data: bytearray, track: Box, offset: int) -> None:
     stbl = find_descendant(data, track, (b"mdia", b"minf", b"stbl"))
     stco = find_child(data, stbl, b"stco")
@@ -363,6 +379,8 @@ def clone_metadata_track(
     video_timescale: int,
     video_presentation_duration: int,
     metadata_leading_duration: int,
+    movie_timescale_value: int,
+    still_time_seconds: float | None = None,
 ) -> tuple[bytearray, bytes]:
     clone = bytearray(template.track)
     clone_track = Box(kind=b"trak", offset=0, size=len(clone), header_size=8)
@@ -387,6 +405,19 @@ def clone_metadata_track(
             total_duration // video_samples,
             video_presentation_duration,
             metadata_leading_duration,
+            input_movie_timescale,
+            still_time_seconds,
+        )
+    elif still_time_seconds is not None:
+        still_ticks = set_still_image_time_timing(
+            clone,
+            clone_track,
+            still_time_seconds,
+            movie_timescale_value,
+        )
+        print(
+            f"WALLPAPER_STILL_TIME seconds={still_time_seconds:.6f} "
+            f"ticks={still_ticks} movie_timescale={movie_timescale_value}"
         )
     return clone, sample_data
 
@@ -534,7 +565,11 @@ def remove_ffmpeg_encoder_tag(path: Path) -> bool:
     return True
 
 
-def prepare_wallpaper_video(input_path: Path, output_path: Path) -> None:
+def prepare_wallpaper_video(
+    input_path: Path,
+    output_path: Path,
+    still_time_seconds: float | None = None,
+) -> None:
     """Add the fixed Live Photo metadata template to a prepared HEVC MOV."""
     input_data = input_path.read_bytes()
     input_mdat = find_top_level(input_data, b"mdat")
@@ -620,10 +655,22 @@ def main() -> None:
     )
     parser.add_argument("input", type=Path, help="Source MOV to preserve without transcoding")
     parser.add_argument("output", type=Path, help="Prepared MOV output path")
+    parser.add_argument(
+        "--still-time-seconds",
+        type=float,
+        default=None,
+        help="Optional still-image-time position used only by the Gallery Live Wallpaper lane",
+    )
     arguments = parser.parse_args()
 
     try:
-        prepare_wallpaper_video(arguments.input, arguments.output)
+        if arguments.still_time_seconds is not None and arguments.still_time_seconds < 0:
+            raise MovPreparationError("still-time-seconds must be zero or positive")
+        prepare_wallpaper_video(
+            arguments.input,
+            arguments.output,
+            still_time_seconds=arguments.still_time_seconds,
+        )
     except (OSError, MovPreparationError) as exc:
         parser.error(str(exc))
 
