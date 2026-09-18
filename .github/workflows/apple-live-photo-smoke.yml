@@ -116,7 +116,7 @@ jobs:
           PY
           ls -lh /tmp/paired.jpg /tmp/paired.mov
 
-      - name: Regression test 0.9s Gallery video
+      - name: Regression test 0.9s Gallery video padded for wallpaper
         shell: bash
         run: |
           ffmpeg -y -hide_banner -loglevel error \
@@ -126,9 +126,9 @@ jobs:
             /tmp/short-source.mp4
 
           ffmpeg -y -hide_banner -loglevel error \
-            -i /tmp/short-source.mp4 -t 0.9 \
+            -i /tmp/short-source.mp4 -t 1.5 \
             -map 0:v:0 -an \
-            -vf 'scale=720:1280:flags=lanczos,setsar=1,fps=60,setpts=PTS-STARTPTS' \
+            -vf 'scale=720:1280:flags=lanczos,setsar=1,fps=60,setpts=PTS-STARTPTS,tpad=stop_mode=clone:stop_duration=0.6' \
             -c:v hevc_videotoolbox -profile:v main -pix_fmt yuv420p \
             -tag:v hvc1 -b:v 1800k -g 60 \
             -map_metadata -1 -video_track_timescale 600 \
@@ -161,7 +161,7 @@ jobs:
           assert stream['codec_tag_string'] == 'hvc1'
           assert stream['r_frame_rate'] == '60/1'
           assert stream['time_base'] == '1/600'
-          assert 0.80 <= duration <= 1.00, duration
+          assert 1.40 <= duration <= 1.60, duration
           assert data.count(b'cdsc') >= 2
           assert b'com.apple.quicktime.live-photo-info' in data
           assert b'com.apple.quicktime.live-photo-still-image-transform' in data
