@@ -100,8 +100,8 @@ export function galleryStatusProfileButtons(sourceMessageId = 0, fileSize = 0) {
   const suffix = gallerySuffix(sourceMessageId, fileSize);
   return {
     inline_keyboard: [
-      [{ text: '✨ Standard HQ', callback_data: `${MEDIA_STATUS_HQ}${suffix}` }],
-      [{ text: '🤖 Android Compatibility (Beta)', callback_data: `${MEDIA_STATUS_HQ_ANDROID}${suffix}` }],
+      [{ text: '✨ Premium 𝗛𝗤', callback_data: `${MEDIA_STATUS_HQ}${suffix}` }],
+      [{ text: '🤖 Android 𝗛𝗤', callback_data: `${MEDIA_STATUS_HQ_ANDROID}${suffix}` }],
     ],
   };
 }
@@ -109,8 +109,8 @@ export function galleryStatusProfileButtons(sourceMessageId = 0, fileSize = 0) {
 export function socialStatusProfileButtons(sourceUrl = '') {
   return {
     inline_keyboard: [
-      [{ text: '✨ Standard HQ', callback_data: callbackData(MEDIA_STATUS_HQ, sourceUrl) }],
-      [{ text: '🤖 Android Compatibility (Beta)', callback_data: callbackData(MEDIA_STATUS_HQ_ANDROID, sourceUrl) }],
+      [{ text: '✨ Premium 𝗛𝗤', callback_data: callbackData(MEDIA_STATUS_HQ, sourceUrl) }],
+      [{ text: '🤖 Android 𝗛𝗤', callback_data: callbackData(MEDIA_STATUS_HQ_ANDROID, sourceUrl) }],
     ],
   };
 }
