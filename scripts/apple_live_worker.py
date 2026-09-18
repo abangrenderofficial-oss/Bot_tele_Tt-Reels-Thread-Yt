@@ -3,6 +3,7 @@ import math
 import os
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 
 import requests
@@ -30,6 +31,14 @@ MAX_TELEGRAM_LIVE_SECONDS = 9.8
 TARGET_MOTION_BYTES = 6.5 * MB
 MAX_RAW_MOTION_BYTES = 9 * MB
 MAX_PAIRED_MOTION_BYTES = 10 * MB
+SAFE_RAW_MOTION_BYTES = int(8.7 * MB)
+OUTPUT_FPS = 60
+OUTPUT_TIMEBASE = '1/600'
+OUTPUT_TIMESCALE = 600
+OUTPUT_CODEC = 'hevc'
+OUTPUT_CODEC_TAG = 'hvc1'
+ENCODE_MAX_ATTEMPTS = 3
+SEND_MAX_ATTEMPTS = 3
 
 
 def require_config():
@@ -183,9 +192,114 @@ def wallpaper_filter(probe):
     if needs_portrait_crop:
         return (
             'scale=1080:1920:force_original_aspect_ratio=increase:flags=lanczos,'
-            'crop=1080:1920,setsar=1,fps=60,setpts=PTS-STARTPTS'
+            'crop=1080:1920,setsar=1,fps={OUTPUT_FPS},setpts=PTS-STARTPTS'
         )
-    return f'scale={width}:{height}:flags=lanczos,setsar=1,fps=60,setpts=PTS-STARTPTS'
+    return f'scale={width}:{height}:flags=lanczos,setsar=1,fps={OUTPUT_FPS},setpts=PTS-STARTPTS'
+
+
+
+def parse_fraction(value):
+    text = str(value or '').strip()
+    if not text:
+        return 0.0
+    if '/' in text:
+        numerator, denominator = text.split('/', 1)
+        denominator_value = float(denominator or 0)
+        return float(numerator or 0) / denominator_value if denominator_value else 0.0
+    return float(text)
+
+
+def validate_wallpaper_video(path, expected_duration=None):
+    result = run(
+        [
+            'ffprobe', '-v', 'error', '-select_streams', 'v:0',
+            '-show_entries',
+            'stream=codec_name,codec_tag_string,width,height,r_frame_rate,time_base:format=duration',
+            '-of', 'json', str(path),
+        ],
+        timeout=60,
+    )
+    payload = json.loads(result.stdout or '{}')
+    streams = payload.get('streams') or []
+    if not streams:
+        raise RuntimeError('Wallpaper output tak mempunyai video stream.')
+    stream = streams[0]
+    duration = float((payload.get('format') or {}).get('duration') or 0)
+    fps = parse_fraction(stream.get('r_frame_rate'))
+    width = int(stream.get('width') or 0)
+    height = int(stream.get('height') or 0)
+
+    if stream.get('codec_name') != OUTPUT_CODEC:
+        raise RuntimeError(f'Wallpaper codec lari daripada profile: {stream.get("codec_name")}.')
+    if stream.get('codec_tag_string') != OUTPUT_CODEC_TAG:
+        raise RuntimeError(f'Wallpaper codec tag bukan {OUTPUT_CODEC_TAG}.')
+    if abs(fps - OUTPUT_FPS) > 0.01:
+        raise RuntimeError(f'Wallpaper FPS bukan {OUTPUT_FPS}: {fps:.3f}.')
+    if stream.get('time_base') != OUTPUT_TIMEBASE:
+        raise RuntimeError(f'Wallpaper timebase bukan {OUTPUT_TIMEBASE}: {stream.get("time_base")}.')
+    if width <= 0 or height <= 0 or width % 2 or height % 2:
+        raise RuntimeError(f'Wallpaper dimensions tak valid: {width}x{height}.')
+    if width > 1080 or height > 1920:
+        raise RuntimeError(f'Wallpaper dimensions melebihi profile: {width}x{height}.')
+    if duration < MIN_WALLPAPER_SOURCE_SECONDS - 0.05:
+        raise RuntimeError(f'Wallpaper output terlalu pendek: {duration:.3f}s.')
+    if duration > MAX_TELEGRAM_LIVE_SECONDS + 0.10:
+        raise RuntimeError(f'Wallpaper output terlalu panjang: {duration:.3f}s.')
+    if expected_duration is not None and abs(duration - expected_duration) > 0.15:
+        raise RuntimeError(
+            f'Wallpaper duration berubah luar jangka: expected={expected_duration:.3f}s actual={duration:.3f}s.'
+        )
+
+    profile = {
+        'codec': stream.get('codec_name'),
+        'tag': stream.get('codec_tag_string'),
+        'fps': fps,
+        'time_base': stream.get('time_base'),
+        'width': width,
+        'height': height,
+        'duration': duration,
+        'bytes': path.stat().st_size,
+    }
+    print(f'wallpaper_video_validated={profile}', flush=True)
+    return profile
+
+
+def encode_wallpaper_attempt(source, output, probe, duration, video_kbps):
+    if output.exists():
+        output.unlink()
+    run(
+        [
+            'ffmpeg', '-y', '-hide_banner', '-loglevel', 'error',
+            '-i', str(source),
+            '-t', f'{duration:.6f}', '-map', '0:v:0', '-an',
+            '-vf', wallpaper_filter(probe),
+            '-c:v', 'hevc_videotoolbox', '-profile:v', 'main', '-pix_fmt', 'yuv420p',
+            '-tag:v', OUTPUT_CODEC_TAG, '-b:v', f'{video_kbps}k',
+            '-g', str(OUTPUT_FPS),
+            '-map_metadata', '-1',
+            '-video_track_timescale', str(OUTPUT_TIMESCALE), '-f', 'mov', str(output),
+        ],
+        timeout=900,
+    )
+    if not output.exists() or output.stat().st_size <= 0:
+        raise RuntimeError('Live Wallpaper motion file tidak terhasil.')
+    return validate_wallpaper_video(output, expected_duration=duration)
+
+
+def verify_prepared_wallpaper_structure(path):
+    data = path.read_bytes()
+    required = [
+        b'com.apple.quicktime.live-photo-info',
+        b'com.apple.quicktime.live-photo-still-image-transform',
+        b'com.apple.quicktime.still-image-time',
+    ]
+    missing = [key.decode('ascii') for key in required if key not in data]
+    if missing:
+        raise RuntimeError('Wallpaper metadata track hilang: ' + ', '.join(missing))
+    cdsc_count = data.count(b'cdsc')
+    if cdsc_count < 2:
+        raise RuntimeError(f'Wallpaper cdsc/tref association tak lengkap: {cdsc_count}.')
+    print(f'wallpaper_structure_validated cdsc={cdsc_count}', flush=True)
 
 
 def encode_motion_and_cover(source, raw_movie, raw_cover, probe):
@@ -197,27 +311,44 @@ def encode_motion_and_cover(source, raw_movie, raw_cover, probe):
     duration = min(source_duration, MAX_TELEGRAM_LIVE_SECONDS)
     duration_mode = 'original' if source_duration <= MAX_TELEGRAM_LIVE_SECONDS else 'telegram_cap'
 
-    # Adapt bitrate to the actual output duration so the paired motion still has a
-    # chance to fit Telegram's Live Photo payload size limit. Short clips can use
-    # up to 6.5 Mbps; longer clips progressively use a lower bitrate.
+    # Keep one deterministic output profile on every run. VideoToolbox bitrate can
+    # vary a little between runners, so retry the exact same profile at a lower
+    # bitrate only when the payload is too large for Telegram.
     total_kbps = int((TARGET_MOTION_BYTES * 8 / duration / 1000) * 0.90)
-    video_kbps = max(350, min(6500, total_kbps))
-    run(
-        [
-            'ffmpeg', '-y', '-hide_banner', '-loglevel', 'error',
-            '-i', str(source),
-            '-t', f'{duration:.6f}', '-map', '0:v:0', '-an',
-            '-vf', wallpaper_filter(probe),
-            '-c:v', 'hevc_videotoolbox', '-profile:v', 'main', '-pix_fmt', 'yuv420p',
-            '-tag:v', 'hvc1', '-b:v', f'{video_kbps}k',
-            '-g', '60',
-            '-map_metadata', '-1',
-            '-video_track_timescale', '600', '-f', 'mov', str(raw_movie),
-        ],
-        timeout=900,
-    )
-    if not raw_movie.exists() or raw_movie.stat().st_size <= 0:
-        raise RuntimeError('Live Wallpaper motion file tidak terhasil.')
+    video_kbps = max(450, min(6500, total_kbps))
+    last_size = 0
+    for attempt in range(1, ENCODE_MAX_ATTEMPTS + 1):
+        print(
+            f'wallpaper_encode attempt={attempt}/{ENCODE_MAX_ATTEMPTS} bitrate={video_kbps}k',
+            flush=True,
+        )
+        try:
+            profile = encode_wallpaper_attempt(
+                source, raw_movie, probe, duration, video_kbps
+            )
+        except Exception:
+            if attempt >= ENCODE_MAX_ATTEMPTS:
+                raise
+            time.sleep(1.5 * attempt)
+            continue
+
+        last_size = raw_movie.stat().st_size
+        if last_size <= SAFE_RAW_MOTION_BYTES:
+            break
+
+        if attempt >= ENCODE_MAX_ATTEMPTS:
+            raise RuntimeError(
+                f'Live Wallpaper motion masih terlalu besar selepas retry: '
+                f'{last_size / MB:.2f}MB.'
+            )
+
+        shrink = max(0.55, min(0.88, SAFE_RAW_MOTION_BYTES / max(1, last_size) * 0.92))
+        video_kbps = max(450, int(video_kbps * shrink))
+        print(
+            f'wallpaper payload {last_size / MB:.2f}MB; retry bitrate={video_kbps}k',
+            flush=True,
+        )
+
     if raw_movie.stat().st_size > MAX_RAW_MOTION_BYTES:
         raise RuntimeError(
             f'Live Wallpaper motion terlalu besar selepas duration diproses: '
@@ -268,6 +399,8 @@ def prepare_wallpaper_metadata(raw_movie, prepared_movie):
             f'Wallpaper metadata MOV terlalu besar: '
             f'{prepared_movie.stat().st_size / MB:.2f}MB.'
         )
+    validate_wallpaper_video(prepared_movie)
+    verify_prepared_wallpaper_structure(prepared_movie)
 
 
 def pair_apple_live_photo(raw_cover, raw_movie, paired_cover, paired_movie):
@@ -288,19 +421,65 @@ def pair_apple_live_photo(raw_cover, raw_movie, paired_cover, paired_movie):
 
 
 def send_live_photo(movie_path, photo_path):
-    with movie_path.open('rb') as movie, photo_path.open('rb') as photo:
-        telegram_call(
-            'sendLivePhoto',
-            {
-                'chat_id': str(CHAT_ID),
-                'caption': 'Live Wallpaper iPhone dah siap 🍎\nSimpan ke Photos, kemudian cuba Use as Wallpaper.',
-            },
-            {
-                'live_photo': ('live-wallpaper.mov', movie, 'video/quicktime'),
-                'photo': ('live-wallpaper.jpg', photo, 'image/jpeg'),
-            },
-            timeout=300,
-        )
+    url = f'{BOT_API_BASE}/bot{BOT_TOKEN}/sendLivePhoto'
+    last_error = None
+    for attempt in range(1, SEND_MAX_ATTEMPTS + 1):
+        try:
+            with movie_path.open('rb') as movie, photo_path.open('rb') as photo:
+                response = requests.post(
+                    url,
+                    data={
+                        'chat_id': str(CHAT_ID),
+                        'caption': (
+                            'Live Wallpaper iPhone dah siap 🍎\n'
+                            'Simpan ke Photos, kemudian cuba Use as Wallpaper.'
+                        ),
+                    },
+                    files={
+                        'live_photo': ('live-wallpaper.mov', movie, 'video/quicktime'),
+                        'photo': ('live-wallpaper.jpg', photo, 'image/jpeg'),
+                    },
+                    timeout=300,
+                )
+            try:
+                payload = response.json()
+            except Exception:
+                payload = {}
+
+            if response.ok and payload.get('ok'):
+                print(f'telegram_live_photo_sent attempt={attempt}', flush=True)
+                return payload.get('result')
+
+            description = str(payload.get('description') or f'HTTP {response.status_code}')
+            last_error = RuntimeError(description)
+
+            # Permanent payload errors will not improve on retry.
+            upper = description.upper()
+            if 'VIDEO_INVALID' in upper or 400 <= response.status_code < 500 and response.status_code != 429:
+                raise last_error
+
+            retry_after = int(((payload.get('parameters') or {}).get('retry_after') or 0))
+            delay = retry_after if retry_after > 0 else min(8, 2 ** attempt)
+            print(
+                f'telegram sendLivePhoto transient failure attempt={attempt}: '
+                f'{description}; retry_in={delay}s',
+                flush=True,
+            )
+            if attempt < SEND_MAX_ATTEMPTS:
+                time.sleep(delay)
+        except requests.RequestException as exc:
+            last_error = exc
+            if attempt >= SEND_MAX_ATTEMPTS:
+                break
+            delay = min(8, 2 ** attempt)
+            print(
+                f'telegram sendLivePhoto network failure attempt={attempt}: {exc}; '
+                f'retry_in={delay}s',
+                flush=True,
+            )
+            time.sleep(delay)
+
+    raise RuntimeError(f'Telegram sendLivePhoto gagal selepas retry: {last_error}')
 
 
 def download_source(path):
@@ -313,15 +492,38 @@ def download_source(path):
         in_memory=True,
     )
     with app:
-        downloaded = app.download_media(VIDEO_FILE_ID, file_name=str(path))
+        downloaded = None
+        last_error = None
+        for attempt in range(1, 3):
+            try:
+                if path.exists():
+                    path.unlink()
+                downloaded = app.download_media(VIDEO_FILE_ID, file_name=str(path))
+                if downloaded:
+                    print(f'mtproto_download_ok attempt={attempt}', flush=True)
+                    break
+            except Exception as exc:
+                last_error = exc
+                print(f'mtproto file_id download failed attempt={attempt}: {exc}', flush=True)
+            if attempt < 2:
+                time.sleep(1.5)
+
         if not downloaded and SOURCE_MESSAGE_ID:
             try:
+                if path.exists():
+                    path.unlink()
                 message = app.get_messages(CHAT_ID, SOURCE_MESSAGE_ID)
                 downloaded = app.download_media(message, file_name=str(path))
+                if downloaded:
+                    print('mtproto_message_fallback_ok', flush=True)
             except Exception as exc:
+                last_error = exc
                 print(f'message fallback failed: {exc}', flush=True)
+
         if not downloaded:
-            raise RuntimeError('MTProto tak dapat download video Telegram ini.')
+            raise RuntimeError(
+                f'MTProto tak dapat download video Telegram ini. last_error={last_error}'
+            )
     if not path.exists() or path.stat().st_size <= 0:
         raise RuntimeError('Video download kosong.')
     if path.stat().st_size > MAX_INPUT_BYTES:
@@ -367,6 +569,8 @@ def main():
             f'photo={paired_cover.stat().st_size}',
             flush=True,
         )
+        validate_wallpaper_video(paired_movie)
+        verify_prepared_wallpaper_structure(paired_movie)
 
         set_progress(88)
         send_live_photo(paired_movie, paired_cover)
