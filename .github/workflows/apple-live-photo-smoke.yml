@@ -184,8 +184,8 @@ jobs:
           prepared_still = still_time_seconds('/tmp/short-prepared.mov')
           paired_still = still_time_seconds('/tmp/short-paired.mov')
           print('prepared_still=', prepared_still, 'paired_still=', paired_still)
-          # The embedded, device-verified template places the event at ~0.417s.
-          assert 0.40 <= prepared_still <= 0.45, prepared_still
+          # The embedded, device-verified template places the event at 0.25s.
+          assert 0.24 <= prepared_still <= 0.26, prepared_still
           assert abs(paired_still - prepared_still) <= 0.001, (prepared_still, paired_still)
 
           payload = json.loads(subprocess.check_output([
