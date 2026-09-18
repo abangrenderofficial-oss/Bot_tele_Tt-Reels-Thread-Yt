@@ -82,7 +82,8 @@ def progress_text(percent):
     value = max(1, min(100, int(round(percent))))
     filled = 10 if value >= 100 else min(9, value // 10)
     bar = '▰' * filled + '▱' * (10 - filled)
-    return f'🍎 Live Wallpaper iPhone sedang diproses...\n{bar} {value}%'
+    title = 'Your Video Is Ready ✅' if value >= 100 else 'Your Video Is on Its Way...'
+    return f'{title}\n\n{bar} {value}% 🔋'
 
 
 def set_progress(percent):
@@ -178,9 +179,6 @@ def even_floor(value):
 
 
 def target_dimensions(width, height):
-    # Native portrait clips keep their original aspect ratio. Landscape / nearly
-    # square clips are converted into a 9:16 portrait canvas because otherwise
-    # iOS has to perform an aggressive wallpaper crop itself.
     ratio = width / max(1, height)
     if ratio > 0.78:
         return 1080, 1920, True
@@ -198,7 +196,6 @@ def wallpaper_filter(probe):
             f'crop=1080:1920,setsar=1,fps={OUTPUT_FPS},setpts=PTS-STARTPTS'
         )
     return f'scale={width}:{height}:flags=lanczos,setsar=1,fps={OUTPUT_FPS},setpts=PTS-STARTPTS'
-
 
 
 def parse_fraction(value):
@@ -309,9 +306,6 @@ def verify_prepared_wallpaper_structure(path):
 
 
 def encode_motion_and_cover(source, raw_movie, raw_cover, probe):
-    # Preserve the source timeline from the beginning, but respect Telegram's
-    # Live Photo transport limit. Source clips up to 9.8s keep their full length;
-    # longer clips are capped to 9.8s instead of being rejected as VIDEO_INVALID.
     clip_start = 0.0
     source_duration = probe['duration']
     if source_duration < MIN_WALLPAPER_OUTPUT_SECONDS:
@@ -323,9 +317,6 @@ def encode_motion_and_cover(source, raw_movie, raw_cover, probe):
         pad_seconds = 0.0
         duration_mode = 'original' if source_duration <= MAX_TELEGRAM_LIVE_SECONDS else 'telegram_cap'
 
-    # Keep one deterministic output profile on every run. VideoToolbox bitrate can
-    # vary a little between runners, so retry the exact same profile at a lower
-    # bitrate only when the payload is too large for Telegram.
     total_kbps = int((TARGET_MOTION_BYTES * 8 / duration / 1000) * 0.90)
     video_kbps = max(450, min(6500, total_kbps))
     last_size = 0
@@ -367,11 +358,6 @@ def encode_motion_and_cover(source, raw_movie, raw_cover, probe):
             f'{raw_movie.stat().st_size / MB:.2f}MB.'
         )
 
-    # The Lock Screen profile is sensitive to cover-to-motion continuity.
-    # Always use the decoded opening frame as the cover and keep the
-    # device-verified still-image-time timing embedded in the metadata template.
-    # Do not retime Gallery uploads: that experiment could collapse the
-    # editable motion window iOS exposes around the key photo.
     still_at = 0.0
     run(
         [
@@ -396,11 +382,7 @@ def encode_motion_and_cover(source, raw_movie, raw_cover, probe):
     }
 
 
-
 def prepare_wallpaper_metadata(raw_movie, prepared_movie):
-    # Inject the device-verified timed metadata template unchanged:
-    # live-photo-info + still-image-time/transform tracks with cdsc references
-    # back to the video track. Gallery and link jobs now share the same timing.
     command = [
         'python3', 'scripts/prepare_wallpaper_video.py',
         str(raw_movie), str(prepared_movie),
@@ -470,7 +452,6 @@ def send_live_photo(movie_path, photo_path):
             description = str(payload.get('description') or f'HTTP {response.status_code}')
             last_error = RuntimeError(description)
 
-            # Permanent payload errors will not improve on retry.
             upper = description.upper()
             if 'VIDEO_INVALID' in upper or 400 <= response.status_code < 500 and response.status_code != 429:
                 raise last_error
@@ -512,9 +493,6 @@ def download_source(path):
         downloaded = None
         last_error = None
 
-        # Gallery uploads must use the user's original Telegram message first.
-        # The bot-generated preview can be recompressed by Telegram (for example
-        # 720x1280 becoming 464x824), which was making the Live Photo look soft.
         if IS_GALLERY_UPLOAD and SOURCE_MESSAGE_ID:
             try:
                 if path.exists():
@@ -608,8 +586,8 @@ def main():
         verify_prepared_wallpaper_structure(paired_movie)
 
         set_progress(88)
-        send_live_photo(paired_movie, paired_cover)
         set_progress(100)
+        send_live_photo(paired_movie, paired_cover)
         finish_progress()
         print('apple live wallpaper worker complete', flush=True)
 
