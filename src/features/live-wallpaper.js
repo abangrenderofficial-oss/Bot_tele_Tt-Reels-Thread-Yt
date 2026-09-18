@@ -188,6 +188,7 @@ export async function processLiveWallpaperButton(callbackQuery, context = {}) {
   } catch (error) {
     console.error('[live-wallpaper/create] dispatch failed:', error?.code, error?.message);
     await removeHeavyProgress(chatId, progressMessage?.message_id);
+    await replaceButtons(callbackQuery, liveWallpaperSelectedButtons(createSpeed));
     if (!cancelled(fence)) {
       await sendMessage(chatId, '❌ Apple Live Photo worker tak dapat dimulakan sekarang. Cuba lagi.').catch(() => {});
     }
