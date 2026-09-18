@@ -1,15 +1,24 @@
 import { telegram } from '../telegram.js';
 
-export async function statusVideoCaption() {
+async function currentBotUsername() {
   try {
     const me = await telegram('getMe');
-    const username = String(me?.username || '').trim().replace(/^@+/, '');
-    if (username) {
-      return `Video Ready For Status ✅\nDownload In @${username}`;
-    }
+    return String(me?.username || '').trim().replace(/^@+/, '');
   } catch (error) {
     console.warn('[status-caption] getMe failed:', error?.message);
+    return '';
   }
+}
 
-  return 'Video Ready For Status ✅';
+async function buildStatusCaption(title) {
+  const username = await currentBotUsername();
+  return username ? `${title}\nDownload In @${username}` : title;
+}
+
+export function statusVideoCaption() {
+  return buildStatusCaption('Video Ready For Status ✅');
+}
+
+export function statusAndroidVideoCaption() {
+  return buildStatusCaption('Video Ready For Android Status ✅');
 }
