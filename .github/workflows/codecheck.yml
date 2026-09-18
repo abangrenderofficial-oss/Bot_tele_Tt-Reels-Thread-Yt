@@ -3,6 +3,8 @@ name: Code Syntax Check
 on:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 jobs:
@@ -19,4 +21,4 @@ jobs:
       - name: Check JavaScript syntax
         run: npm run check
       - name: Check media worker Python syntax
-        run: python3 -m py_compile scripts/heavy_status_worker.py scripts/apple_live_worker.py
+        run: python3 -m py_compile scripts/heavy_status_worker.py scripts/apple_live_worker.py scripts/live_preview_worker.py

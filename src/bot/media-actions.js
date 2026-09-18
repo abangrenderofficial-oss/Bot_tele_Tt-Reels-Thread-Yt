@@ -3,6 +3,20 @@ import { telegram } from '../telegram.js';
 
 export const MEDIA_STATUS_HQ = 'media:status:v2';
 export const MEDIA_LIVE_WALLPAPER = 'media:live:v1';
+export const MEDIA_LIVE_SPEED = 'media:live:speed:v1';
+export const MEDIA_LIVE_PREVIEW = 'media:live:preview:v1';
+export const MEDIA_LIVE_CREATE = 'media:live:create:v1';
+export const MEDIA_LIVE_CHANGE_SPEED = 'media:live:change:v1';
+export const MEDIA_LIVE_BACK = 'media:live:back:v1';
+
+export const LIVE_WALLPAPER_SPEEDS = Object.freeze([
+  { code: '050', value: 0.5, label: '0.5×' },
+  { code: '075', value: 0.75, label: '0.75×' },
+  { code: '100', value: 1, label: '1× Original' },
+  { code: '125', value: 1.25, label: '1.25×' },
+  { code: '150', value: 1.5, label: '1.5×' },
+  { code: '200', value: 2, label: '2×' },
+]);
 
 function compactMediaSourceToken(sourceUrl = '') {
   const raw = String(sourceUrl || '').trim();
@@ -63,6 +77,44 @@ export function imageStatusButton() {
       inline_keyboard: [[{ text: '📱 Status HQ', callback_data: MEDIA_STATUS_HQ }]],
     },
   };
+}
+
+export function liveWallpaperSpeedButtons() {
+  const speedButton = (option) => ({
+    text: option.label,
+    callback_data: `${MEDIA_LIVE_SPEED}:${option.code}`,
+  });
+  return {
+    reply_markup: {
+      inline_keyboard: [
+        LIVE_WALLPAPER_SPEEDS.slice(0, 3).map(speedButton),
+        LIVE_WALLPAPER_SPEEDS.slice(3, 6).map(speedButton),
+        [{ text: '⬅️ Kembali', callback_data: MEDIA_LIVE_BACK }],
+      ],
+    },
+  };
+}
+
+export function liveWallpaperSelectedButtons(option) {
+  if (!option) return liveWallpaperSpeedButtons();
+  return {
+    reply_markup: {
+      inline_keyboard: [
+        [{ text: `✅ Speed ${option.label}`, callback_data: `${MEDIA_LIVE_SPEED}:${option.code}` }],
+        [{ text: '👀 Preview Motion', callback_data: `${MEDIA_LIVE_PREVIEW}:${option.code}` }],
+        [{ text: '🍎 Create Live Wallpaper', callback_data: `${MEDIA_LIVE_CREATE}:${option.code}` }],
+        [{ text: '🔄 Change Speed', callback_data: MEDIA_LIVE_CHANGE_SPEED }],
+      ],
+    },
+  };
+}
+
+export function liveWallpaperSpeedFromAction(action, prefix) {
+  const raw = String(action || '');
+  const marker = `${prefix}:`;
+  if (!raw.startsWith(marker)) return null;
+  const code = raw.slice(marker.length);
+  return LIVE_WALLPAPER_SPEEDS.find((option) => option.code === code) || null;
 }
 
 export function galleryMediaActionButtons(sourceMessageId = 0, fileSize = 0) {
