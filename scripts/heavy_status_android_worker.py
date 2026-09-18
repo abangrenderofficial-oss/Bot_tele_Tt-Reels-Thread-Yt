@@ -38,7 +38,7 @@ def require_config():
     if missing:
         raise RuntimeError('Missing required configuration: ' + ', '.join(missing))
     if FILE_SIZE > MAX_INPUT_BYTES:
-        raise RuntimeError(f'Video exceeds {MAX_INPUT_MB}MB Android Beta limit.')
+        raise RuntimeError(f'Video exceeds {MAX_INPUT_MB}MB Android HQ limit.')
 
 
 def telegram_call(method, data=None, files=None, timeout=300):
@@ -62,10 +62,10 @@ def status_caption():
         me = telegram_call('getMe', timeout=30) or {}
         username = str(me.get('username') or '').strip().lstrip('@')
         if username:
-            return f'Video Ready For Status ✅\nDownload In @{username}'
+            return f'Video Ready For Android Status ✅\nDownload In @{username}'
     except Exception as exc:
         print(f'bot username lookup failed: {exc}', flush=True)
-    return 'Video Ready For Status ✅'
+    return 'Video Ready For Android Status ✅'
 
 
 def progress_text(percent):
@@ -146,7 +146,7 @@ def probe_video(path):
     width = int(video_stream.get('width') or 0)
     height = int(video_stream.get('height') or 0)
     if duration <= 0:
-        raise RuntimeError('Tak dapat baca duration video Android Beta.')
+        raise RuntimeError('Tak dapat baca duration video Android HQ.')
     return {
         'duration': duration,
         'width': width,
@@ -186,9 +186,9 @@ def verify_output_audio(path, expected_audio):
         return
     output_probe = probe_video(path)
     if not output_probe.get('has_audio'):
-        raise RuntimeError('Android Beta output hilang audio stream asal.')
+        raise RuntimeError('Android HQ output hilang audio stream asal.')
     print(
-        'android beta audio verified '
+        'android hq audio verified '
         f"codec={output_probe.get('audio_codec')} "
         f"rate={output_probe.get('audio_sample_rate')} "
         f"channels={output_probe.get('audio_channels')}",
@@ -230,11 +230,11 @@ def encode_android(input_path, output_path, probe):
         run(cmd, timeout=1200)
         size = output_path.stat().st_size
         verify_output_audio(output_path, plan['has_audio'])
-        print(f'android beta v3 attempt={index} size={size} maxrate={maxrate}k crf={crf} preset=fast', flush=True)
+        print(f'android hq v3 attempt={index} size={size} maxrate={maxrate}k crf={crf} preset=fast', flush=True)
         if size <= WHATSAPP_SAFE_MAX_BYTES:
             return
 
-    raise RuntimeError('Output Android Beta masih melebihi 15.5MB WhatsApp-safe limit.')
+    raise RuntimeError('Output Android HQ masih melebihi 15.5MB WhatsApp-safe limit.')
 
 
 def send_status_video(path):
@@ -258,7 +258,7 @@ def send_status_video(path):
 
 def download_source(path):
     set_progress(5)
-    app = Client('heavy_android_beta_worker', api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN, in_memory=True)
+    app = Client('heavy_android_hq_worker', api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN, in_memory=True)
     with app:
         downloaded = app.download_media(VIDEO_FILE_ID, file_name=str(path))
         if not downloaded and SOURCE_MESSAGE_ID:
@@ -268,9 +268,9 @@ def download_source(path):
             except Exception as exc:
                 print(f'message fallback failed: {exc}', flush=True)
         if not downloaded:
-            raise RuntimeError('MTProto tak dapat download video Android Beta ini.')
+            raise RuntimeError('MTProto tak dapat download video Android HQ ini.')
     if not path.exists() or path.stat().st_size <= 0:
-        raise RuntimeError('Video Android Beta download kosong.')
+        raise RuntimeError('Video Android HQ download kosong.')
     if path.stat().st_size > MAX_INPUT_BYTES:
         raise RuntimeError(f'Video melebihi limit {MAX_INPUT_MB}MB.')
     set_progress(30)
@@ -278,7 +278,7 @@ def download_source(path):
 
 def main():
     require_config()
-    print(f'android beta heavy worker input={FILE_SIZE} chat={CHAT_ID}', flush=True)
+    print(f'android hq heavy worker input={FILE_SIZE} chat={CHAT_ID}', flush=True)
     with tempfile.TemporaryDirectory(prefix='abangrender-status-android-') as temp_dir:
         temp = Path(temp_dir)
         source = temp / 'source-video.bin'
@@ -292,13 +292,13 @@ def main():
         set_progress(100)
         send_status_video(output)
         finish_progress()
-        print('android beta heavy worker complete', flush=True)
+        print('android hq heavy worker complete', flush=True)
 
 
 if __name__ == '__main__':
     try:
         main()
     except Exception as exc:
-        print(f'android beta heavy worker failed: {type(exc).__name__}: {exc}', flush=True)
-        fail_progress('Android Compatibility Beta tak berjaya. Cuba hantar semula atau guna video yang lebih kecil.')
+        print(f'android hq heavy worker failed: {type(exc).__name__}: {exc}', flush=True)
+        fail_progress('Android HQ tak berjaya. Cuba hantar semula atau guna video yang lebih kecil.')
         raise
