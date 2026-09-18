@@ -57,6 +57,17 @@ def telegram_call(method, data=None, files=None, timeout=180):
     return payload.get('result')
 
 
+def status_caption():
+    try:
+        me = telegram_call('getMe', timeout=30) or {}
+        username = str(me.get('username') or '').strip().lstrip('@')
+        if username:
+            return f'Video Ready For Status ✅\nDownload In @{username}'
+    except Exception as exc:
+        print(f'bot username lookup failed: {exc}', flush=True)
+    return 'Video Ready For Status ✅'
+
+
 def progress_text(percent):
     value = max(1, min(100, int(round(percent))))
     filled = 10 if value >= 100 else min(9, value // 10)
@@ -303,11 +314,7 @@ def send_status_video(path, android=False):
     metadata = probe_video(path)
     data = {
         'chat_id': str(CHAT_ID),
-        'caption': (
-            'Video Android Beta ni dah ready untuk upload ke status ✅'
-            if android
-            else 'Video ni dah ready untuk upload ke status ✅'
-        ),
+        'caption': status_caption(),
         'supports_streaming': 'true',
         'width': str(int(metadata.get('width') or 0)),
         'height': str(int(metadata.get('height') or 0)),
