@@ -29,7 +29,6 @@ export async function dispatchHeavyMediaJob({
   videoFileId,
   fileSize = 0,
   action = 'status_hq',
-  speed = 1,
   progressMessageId = 0,
   sourceMessageId = 0,
 }) {
@@ -75,7 +74,6 @@ export async function dispatchHeavyMediaJob({
         video_file_id: String(videoFileId),
         file_size: String(size),
         action: String(action || 'status_hq'),
-        speed: String(Math.max(0.5, Math.min(2, Number(speed) || 1))),
         progress_message_id: String(Math.max(0, Number(progressMessageId) || 0)),
         source_message_id: String(Math.max(0, Number(sourceMessageId) || 0)),
       },
