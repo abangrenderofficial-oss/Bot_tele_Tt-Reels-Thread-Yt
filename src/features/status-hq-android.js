@@ -12,7 +12,7 @@ import {
 } from '../bot/media-actions.js';
 import { localMediaLane } from '../bot/job-lanes.js';
 import { removeHeavyProgress, startHeavyStatusProgress, startStatusProgress } from '../bot/progress.js';
-import { statusVideoCaption } from '../bot/status-caption.js';
+import { statusAndroidVideoCaption } from '../bot/status-caption.js';
 
 function cancelled(fence) {
   return fence && !isJobFenceActive(fence);
@@ -21,7 +21,7 @@ function cancelled(fence) {
 async function prepareAndroidFromSocialSource(sourceUrl) {
   const platform = detectPlatform(sourceUrl);
   if (!platform) {
-    const error = new Error('Android Beta could not detect the social source platform.');
+    const error = new Error('Android HQ could not detect the social source platform.');
     error.code = 'STATUS_ANDROID_PLATFORM_UNKNOWN';
     throw error;
   }
@@ -29,7 +29,7 @@ async function prepareAndroidFromSocialSource(sourceUrl) {
   const media = await resolveMedia(platform, sourceUrl);
   const best = chooseBestVideo(media?.videos || []);
   if (!best?.url) {
-    const error = new Error('Android Beta could not resolve a usable social source video.');
+    const error = new Error('Android HQ could not resolve a usable social source video.');
     error.code = 'STATUS_ANDROID_SOURCE_NOT_FOUND';
     throw error;
   }
@@ -55,7 +55,7 @@ export async function processStatusAndroidButton(callbackQuery, context = {}) {
   if (!videoFileId) {
     await telegram('answerCallbackQuery', {
       callback_query_id: callbackQuery.id,
-      text: 'Android Compatibility Beta hanya untuk video.',
+      text: 'Android HQ hanya untuk video.',
       show_alert: true,
     }).catch(() => {});
     return true;
@@ -108,7 +108,7 @@ export async function processStatusAndroidButton(callbackQuery, context = {}) {
       console.error('[status-hq/android/heavy] dispatch failed:', error?.code, error?.message);
       await removeHeavyProgress(chatId, progressMessage?.message_id);
       if (!cancelled(fence)) {
-        await sendMessage(chatId, '❌ Android Compatibility Beta tak dapat dimulakan sekarang. Cuba lagi.').catch(() => {});
+        await sendMessage(chatId, '❌ Android HQ tak dapat dimulakan sekarang. Cuba lagi.').catch(() => {});
       }
     }
     return true;
@@ -157,14 +157,14 @@ export async function processStatusAndroidButton(callbackQuery, context = {}) {
     await sendVideoFileUpload(
       chatId,
       prepared.filePath,
-      await statusVideoCaption(),
+      await statusAndroidVideoCaption(),
     );
     await progress.remove();
   } catch (error) {
     console.error('[status-hq/android] failed:', error?.code, error?.message);
     await progress.remove();
     if (!cancelled(fence)) {
-      await sendMessage(chatId, '❌ Android Compatibility Beta tak dapat disiapkan. Hantar video/link semula dan cuba lagi.').catch(() => {});
+      await sendMessage(chatId, '❌ Android HQ tak dapat disiapkan. Hantar video/link semula dan cuba lagi.').catch(() => {});
     }
   } finally {
     if (prepared?.cleanup) await prepared.cleanup().catch(() => {});
