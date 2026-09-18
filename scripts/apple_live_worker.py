@@ -524,21 +524,38 @@ def download_source(path):
     with app:
         downloaded = None
         last_error = None
-        for attempt in range(1, 3):
+
+        # Gallery uploads must use the user's original Telegram message first.
+        # The bot-generated preview can be recompressed by Telegram (for example
+        # 720x1280 becoming 464x824), which was making the Live Photo look soft.
+        if IS_GALLERY_UPLOAD and SOURCE_MESSAGE_ID:
             try:
                 if path.exists():
                     path.unlink()
-                downloaded = app.download_media(VIDEO_FILE_ID, file_name=str(path))
+                message = app.get_messages(CHAT_ID, SOURCE_MESSAGE_ID)
+                downloaded = app.download_media(message, file_name=str(path))
                 if downloaded:
-                    print(f'mtproto_download_ok attempt={attempt}', flush=True)
-                    break
+                    print('mtproto_gallery_original_ok', flush=True)
             except Exception as exc:
                 last_error = exc
-                print(f'mtproto file_id download failed attempt={attempt}: {exc}', flush=True)
-            if attempt < 2:
-                time.sleep(1.5)
+                print(f'gallery original download failed: {exc}', flush=True)
 
-        if not downloaded and SOURCE_MESSAGE_ID:
+        if not downloaded:
+            for attempt in range(1, 3):
+                try:
+                    if path.exists():
+                        path.unlink()
+                    downloaded = app.download_media(VIDEO_FILE_ID, file_name=str(path))
+                    if downloaded:
+                        print(f'mtproto_file_id_ok attempt={attempt}', flush=True)
+                        break
+                except Exception as exc:
+                    last_error = exc
+                    print(f'mtproto file_id download failed attempt={attempt}: {exc}', flush=True)
+                if attempt < 2:
+                    time.sleep(1.5)
+
+        if not downloaded and SOURCE_MESSAGE_ID and not IS_GALLERY_UPLOAD:
             try:
                 if path.exists():
                     path.unlink()
