@@ -120,21 +120,30 @@ def run(cmd, timeout=1200):
 def probe_video(path):
     result = run(
         [
-            'ffprobe', '-v', 'error', '-select_streams', 'v:0',
-            '-show_entries', 'stream=width,height:format=duration',
+            'ffprobe', '-v', 'error',
+            '-show_entries', 'stream=codec_type,codec_name,width,height,sample_rate,channels:format=duration',
             '-of', 'json', str(path),
         ],
         timeout=60,
     )
     payload = json.loads(result.stdout or '{}')
     streams = payload.get('streams') or []
-    stream = streams[0] if streams else {}
+    video_stream = next((stream for stream in streams if stream.get('codec_type') == 'video'), {})
+    audio_stream = next((stream for stream in streams if stream.get('codec_type') == 'audio'), {})
     duration = float((payload.get('format') or {}).get('duration') or 0)
-    width = int(stream.get('width') or 0)
-    height = int(stream.get('height') or 0)
+    width = int(video_stream.get('width') or 0)
+    height = int(video_stream.get('height') or 0)
     if duration <= 0:
         raise RuntimeError('Tak dapat baca duration video Android Beta.')
-    return {'duration': duration, 'width': width, 'height': height}
+    return {
+        'duration': duration,
+        'width': width,
+        'height': height,
+        'has_audio': bool(audio_stream),
+        'audio_codec': str(audio_stream.get('codec_name') or ''),
+        'audio_sample_rate': int(audio_stream.get('sample_rate') or 0),
+        'audio_channels': int(audio_stream.get('channels') or 0),
+    }
 
 
 def android_plan(probe):
@@ -142,7 +151,12 @@ def android_plan(probe):
     audio_kbps = 128
     total_kbps = max(320, int((WHATSAPP_SAFE_MAX_BYTES * 8 / duration / 1000) * 0.94))
     video_kbps = max(180, min(3800, total_kbps - audio_kbps - 80))
-    return {'duration': duration, 'audio_kbps': audio_kbps, 'video_kbps': video_kbps}
+    return {
+        'duration': duration,
+        'audio_kbps': audio_kbps,
+        'video_kbps': video_kbps,
+        'has_audio': bool(probe.get('has_audio')),
+    }
 
 
 def android_scale_filter():
@@ -155,6 +169,21 @@ def android_scale_filter():
     )
 
 
+def verify_output_audio(path, expected_audio):
+    if not expected_audio:
+        return
+    output_probe = probe_video(path)
+    if not output_probe.get('has_audio'):
+        raise RuntimeError('Android Beta output hilang audio stream asal.')
+    print(
+        'android beta audio verified '
+        f"codec={output_probe.get('audio_codec')} "
+        f"rate={output_probe.get('audio_sample_rate')} "
+        f"channels={output_probe.get('audio_channels')}",
+        flush=True,
+    )
+
+
 def encode_android(input_path, output_path, probe):
     plan = android_plan(probe)
     attempts = ((1.0, 23), (0.84, 24), (0.70, 25))
@@ -164,10 +193,10 @@ def encode_android(input_path, output_path, probe):
             output_path.unlink()
         maxrate = max(180, int(plan['video_kbps'] * rate_scale))
         bufsize = max(1000, int(maxrate * 1.5))
-        filters = [android_scale_filter(), 'setsar=1', 'fps=30']
+        filters = [android_scale_filter(), 'setsar=1', 'fps=30', 'setpts=PTS-STARTPTS']
         cmd = [
             'ffmpeg', '-y', '-hide_banner', '-loglevel', 'error', '-nostdin', '-nostats',
-            '-filter_threads', '1', '-i', str(input_path),
+            '-filter_threads', '1', '-fflags', '+genpts', '-i', str(input_path),
             '-map', '0:v:0', '-map', '0:a:0?',
             '-vf', ','.join(filters),
             '-c:v', 'libx264', '-preset', 'faster', '-pix_fmt', 'yuv420p',
@@ -175,12 +204,20 @@ def encode_android(input_path, output_path, probe):
             '-profile:v', 'high', '-level:v', '4.0',
             '-g', '250', '-sc_threshold', '0',
             '-color_range', 'tv', '-color_primaries', 'bt709', '-color_trc', 'bt709', '-colorspace', 'bt709',
-            '-c:a', 'aac', '-ar', '44100', '-ac', '2', '-b:a', f"{plan['audio_kbps']}k",
-            '-brand', 'isom', '-movflags', '+faststart', '-metadata:s:v:0', 'rotate=0',
-            '-map_metadata', '-1', '-f', 'mp4', '-threads', '2', str(output_path),
         ]
+        if plan['has_audio']:
+            cmd.extend([
+                '-af', 'aresample=48000:async=1:first_pts=0,asetpts=PTS-STARTPTS',
+                '-c:a', 'aac', '-profile:a', 'aac_low', '-ar', '48000', '-ac', '2', '-b:a', f"{plan['audio_kbps']}k",
+                '-tag:a', 'mp4a', '-disposition:a:0', 'default',
+            ])
+        cmd.extend([
+            '-brand', 'isom', '-movflags', '+faststart', '-metadata:s:v:0', 'rotate=0',
+            '-map_metadata', '-1', '-avoid_negative_ts', 'make_zero', '-f', 'mp4', '-threads', '2', str(output_path),
+        ])
         run(cmd, timeout=1200)
         size = output_path.stat().st_size
+        verify_output_audio(output_path, plan['has_audio'])
         print(f'android beta attempt={index} size={size} maxrate={maxrate}k crf={crf}', flush=True)
         if size <= WHATSAPP_SAFE_MAX_BYTES:
             return

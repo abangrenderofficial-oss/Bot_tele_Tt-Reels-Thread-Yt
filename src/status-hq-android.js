@@ -159,12 +159,20 @@ async function probeLocalVideo(filePath) {
   }
 
   const duration = parseClockDuration(stderr.match(/Duration:\s*([^,]+)/i)?.[1] || '');
+  const audioLine = stderr.match(/Audio:\s*([^\n]+)/i)?.[1] || '';
+  const audioCodec = audioLine.match(/^([^,\s]+)/)?.[1] || '';
+  const audioSampleRate = Number(audioLine.match(/(\d{4,6})\s*Hz/i)?.[1] || 0) || null;
   if (!duration) {
     const error = new Error('Android Status HQ could not determine source duration.');
     error.code = 'STATUS_ANDROID_PROBE_FAILED';
     throw error;
   }
-  return { duration };
+  return {
+    duration,
+    hasAudio: Boolean(audioLine),
+    audioCodec: audioCodec || null,
+    audioSampleRate,
+  };
 }
 
 function configuredUploadLimitBytes() {
@@ -191,6 +199,7 @@ function chooseAndroidPlan(probe) {
     duration,
     audioKbps,
     videoKbps,
+    hasAudio: Boolean(probe.hasAudio),
     threads: Math.max(1, Math.min(2, Number(process.env.STATUS_ANDROID_FFMPEG_THREADS || 2))),
     filterThreads: Math.max(1, Math.min(2, Number(process.env.STATUS_ANDROID_FILTER_THREADS || 1))),
   };
@@ -208,7 +217,31 @@ function androidVideoFilter() {
     `scale=w='max(2,trunc(iw*${fit}/2)*2)':h='max(2,trunc(ih*${fit}/2)*2)':flags=lanczos`,
     'setsar=1',
     'fps=30',
+    'setpts=PTS-STARTPTS',
   ].join(',');
+}
+
+function androidAudioArgs(plan) {
+  if (!plan.hasAudio) return [];
+  return [
+    '-af', 'aresample=48000:async=1:first_pts=0,asetpts=PTS-STARTPTS',
+    '-c:a', 'aac', '-profile:a', 'aac_low', '-ar', '48000', '-ac', '2', '-b:a', `${plan.audioKbps}k`,
+    '-tag:a', 'mp4a', '-disposition:a:0', 'default',
+  ];
+}
+
+async function verifyAndroidAudio(outputPath, expectedAudio) {
+  if (!expectedAudio) return;
+  const outputProbe = await probeLocalVideo(outputPath);
+  if (!outputProbe.hasAudio) {
+    const error = new Error('Android Status HQ output lost the source audio stream.');
+    error.code = 'STATUS_ANDROID_AUDIO_MISSING';
+    throw error;
+  }
+  console.log('[status-hq/android] audio output verified:', {
+    codec: outputProbe.audioCodec,
+    sampleRate: outputProbe.audioSampleRate,
+  });
 }
 
 async function encodeAndroidStatus(inputPath, outputPath, plan, attempt) {
@@ -220,6 +253,7 @@ async function encodeAndroidStatus(inputPath, outputPath, plan, attempt) {
   const args = [
     '-y', '-hide_banner', '-loglevel', 'error', '-nostats', '-nostdin',
     '-filter_threads', String(plan.filterThreads),
+    '-fflags', '+genpts',
     '-i', inputPath,
     '-map', '0:v:0', '-map', '0:a:0?',
     '-vf', androidVideoFilter(),
@@ -228,9 +262,9 @@ async function encodeAndroidStatus(inputPath, outputPath, plan, attempt) {
     '-profile:v', 'high', '-level:v', '4.0',
     '-g', '250', '-sc_threshold', '0',
     '-color_range', 'tv', '-color_primaries', 'bt709', '-color_trc', 'bt709', '-colorspace', 'bt709',
-    '-c:a', 'aac', '-ar', '44100', '-ac', '2', '-b:a', `${plan.audioKbps}k`,
+    ...androidAudioArgs(plan),
     '-brand', 'isom', '-movflags', '+faststart', '-metadata:s:v:0', 'rotate=0',
-    '-map_metadata', '-1', '-f', 'mp4', '-threads', String(plan.threads), outputPath,
+    '-map_metadata', '-1', '-avoid_negative_ts', 'make_zero', '-f', 'mp4', '-threads', String(plan.threads), outputPath,
   ];
 
   try {
@@ -255,6 +289,7 @@ async function encodeAndroidStatus(inputPath, outputPath, plan, attempt) {
     error.code = 'STATUS_ANDROID_OUTPUT_MISSING';
     throw error;
   }
+  await verifyAndroidAudio(outputPath, plan.hasAudio);
   return { size: info.size, videoKbps: maxRate, crf };
 }
 
@@ -283,7 +318,15 @@ export async function prepareWhatsAppStatusAndroidHQ({ video, sourceUrl = '', pl
       paths.push(inputPath);
     }
 
-    const probe = await probeLocalVideo(inputPath);
+    let probe = await probeLocalVideo(inputPath);
+    if (!probe.hasAudio && sourceUrl) {
+      console.warn('[status-hq/android] direct source has no audio; retrying original social URL with yt-dlp.');
+      await rm(inputPath, { force: true }).catch(() => {});
+      inputPath = await downloadWithYtDlp(sourceUrl, `${base}-source-ytdlp-audio`, platform || 'generic');
+      paths.push(inputPath);
+      probe = await probeLocalVideo(inputPath);
+    }
+
     const plan = chooseAndroidPlan(probe);
     const safeLimit = whatsappSafeOutputBytes();
     const attempts = [
@@ -323,6 +366,7 @@ export async function prepareWhatsAppStatusAndroidHQ({ video, sourceUrl = '', pl
         maxVideoKbps: encoded.videoKbps,
         crf: encoded.crf,
         audioKbps: plan.audioKbps,
+        audioProfile: plan.hasAudio ? 'AAC-LC 48kHz stereo' : 'source has no audio',
         maxOutputMb: Number((safeLimit / MB).toFixed(2)),
       },
       quality: 'Status HQ Android Beta v2 • H.264 High • 30fps CFR • yuv420p • WhatsApp-safe size • ratio asal',
