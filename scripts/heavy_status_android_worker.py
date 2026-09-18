@@ -72,7 +72,8 @@ def progress_text(percent):
     value = max(1, min(100, int(round(percent))))
     filled = 10 if value >= 100 else min(9, value // 10)
     bar = '▰' * filled + '▱' * (10 - filled)
-    return f'🤖 Status HQ Android Beta sedang diproses...\n{bar} {value}%'
+    title = 'Your Video Is Ready ✅' if value >= 100 else 'Your Video Is on Its Way...'
+    return f'{title}\n\n{bar} {value}% 🔋'
 
 
 def set_progress(percent):
@@ -288,8 +289,8 @@ def main():
         set_progress(42)
         encode_android(source, output, probe)
         set_progress(88)
-        send_status_video(output)
         set_progress(100)
+        send_status_video(output)
         finish_progress()
         print('android beta heavy worker complete', flush=True)
 
