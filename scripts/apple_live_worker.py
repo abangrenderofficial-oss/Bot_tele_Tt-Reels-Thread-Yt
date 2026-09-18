@@ -31,8 +31,6 @@ BOT_API_BASE = os.environ.get('TELEGRAM_API_BASE_URL', 'https://api.telegram.org
 MIN_WALLPAPER_SOURCE_SECONDS = 0.5
 MIN_WALLPAPER_OUTPUT_SECONDS = 1.5
 MAX_TELEGRAM_LIVE_SECONDS = 9.8
-GALLERY_STILL_TIME_MAX_SECONDS = 1.8
-GALLERY_STILL_TIME_END_MARGIN = 0.05
 TARGET_MOTION_BYTES = 6.5 * MB
 MAX_RAW_MOTION_BYTES = 9 * MB
 MAX_PAIRED_MOTION_BYTES = 10 * MB
@@ -369,20 +367,12 @@ def encode_motion_and_cover(source, raw_movie, raw_cover, probe):
             f'{raw_movie.stat().st_size / MB:.2f}MB.'
         )
 
-    # Keep the proven link-downloader lane untouched. Only Gallery uploads
-    # move photoTime deeper into the clip so iOS does not stop the wallpaper
-    # motion around the template's original ~0.4s still-image-time.
-    if IS_GALLERY_UPLOAD:
-        real_motion_end = min(source_duration, duration)
-        still_at = max(
-            0.0,
-            min(
-                GALLERY_STILL_TIME_MAX_SECONDS,
-                real_motion_end - GALLERY_STILL_TIME_END_MARGIN,
-            ),
-        )
-    else:
-        still_at = 0.0
+    # The Lock Screen profile is sensitive to cover-to-motion continuity.
+    # Always use the decoded opening frame as the cover and keep the
+    # device-verified still-image-time timing embedded in the metadata template.
+    # Do not retime Gallery uploads: that experiment could collapse the
+    # editable motion window iOS exposes around the key photo.
+    still_at = 0.0
     run(
         [
             'ffmpeg', '-y', '-hide_banner', '-loglevel', 'error',
@@ -407,17 +397,14 @@ def encode_motion_and_cover(source, raw_movie, raw_cover, probe):
 
 
 
-def prepare_wallpaper_metadata(raw_movie, prepared_movie, still_time_seconds=None):
-    # Inject the device-verified timed metadata template:
+def prepare_wallpaper_metadata(raw_movie, prepared_movie):
+    # Inject the device-verified timed metadata template unchanged:
     # live-photo-info + still-image-time/transform tracks with cdsc references
-    # back to the video track. Gallery uploads may retime only the still-image
-    # event; link-downloader Live Wallpaper jobs keep the proven template timing.
+    # back to the video track. Gallery and link jobs now share the same timing.
     command = [
         'python3', 'scripts/prepare_wallpaper_video.py',
         str(raw_movie), str(prepared_movie),
     ]
-    if IS_GALLERY_UPLOAD and still_time_seconds is not None:
-        command.extend(['--still-time-seconds', f'{still_time_seconds:.6f}'])
     run(
         command,
         timeout=180,
@@ -604,11 +591,7 @@ def main():
         print(f'wallpaper_profile={clip}', flush=True)
 
         set_progress(60)
-        prepare_wallpaper_metadata(
-            raw_movie,
-            prepared_movie,
-            still_time_seconds=clip.get('still_time'),
-        )
+        prepare_wallpaper_metadata(raw_movie, prepared_movie)
         print(
             f'wallpaper metadata movie={prepared_movie.stat().st_size}',
             flush=True,
