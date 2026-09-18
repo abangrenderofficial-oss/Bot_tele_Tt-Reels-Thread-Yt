@@ -72,13 +72,8 @@ def progress_text(percent):
     value = max(1, min(100, int(round(percent))))
     filled = 10 if value >= 100 else min(9, value // 10)
     bar = '▰' * filled + '▱' * (10 - filled)
-    if ACTION == 'live_wallpaper':
-        title = '🍎 Live Wallpaper sedang diproses...'
-    elif ACTION == 'status_hq_android':
-        title = '🤖 Status HQ Android Beta sedang diproses...'
-    else:
-        title = '🔋 Status HQ sedang diproses...'
-    return f'{title}\n{bar} {value}%'
+    title = 'Your Video Is Ready ✅' if value >= 100 else 'Your Video Is on Its Way...'
+    return f'{title}\n\n{bar} {value}% 🔋'
 
 
 def set_progress(percent):
@@ -378,21 +373,23 @@ def main():
             cover = temp / 'live-wallpaper.jpg'
             encode_live_wallpaper(source, live_video, cover, probe)
             set_progress(88)
+            set_progress(100)
             send_live_photo(live_video, cover)
         elif ACTION == 'status_hq_android':
             set_progress(42)
             output = temp / 'status-hq-android.mp4'
             encode_status(source, output, probe, android=True)
             set_progress(88)
+            set_progress(100)
             send_status_video(output, android=True)
         else:
             set_progress(42)
             output = temp / 'status-hq.mp4'
             encode_status(source, output, probe, android=False)
             set_progress(88)
+            set_progress(100)
             send_status_video(output, android=False)
 
-        set_progress(100)
         finish_progress()
         print('heavy worker complete', flush=True)
 
