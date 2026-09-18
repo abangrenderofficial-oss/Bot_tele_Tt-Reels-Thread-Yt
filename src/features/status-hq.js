@@ -12,7 +12,7 @@ import {
   galleryMediaMeta,
 } from '../bot/media-actions.js';
 import { localMediaLane } from '../bot/job-lanes.js';
-import { removeHeavyProgress, startHeavyStatusProgress, startStatusProgress } from '../bot/progress.js';
+import { removeHeavyProgress, startHeavyStatusProgress, startImageStatusProgress, startStatusProgress } from '../bot/progress.js';
 import { sendDocumentFileUpload } from '../bot/telegram-document.js';
 import { statusVideoCaption } from '../bot/status-caption.js';
 
@@ -134,7 +134,7 @@ export async function processStatusButton(callbackQuery, context = {}) {
 
   await sendChatAction(chatId, isImage ? 'upload_document' : 'upload_video').catch(() => {});
   let prepared = null;
-  const progress = await startStatusProgress(chatId);
+  const progress = await (isImage ? startImageStatusProgress(chatId) : startStatusProgress(chatId));
   try {
     if (!fileId) throw new Error('Media file_id missing from callback message.');
 
