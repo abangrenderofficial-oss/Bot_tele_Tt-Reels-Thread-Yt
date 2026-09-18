@@ -2,6 +2,7 @@ import { extractFirstUrl } from '../platform.js';
 import { telegram } from '../telegram.js';
 
 export const MEDIA_STATUS_HQ = 'media:status:v2';
+export const MEDIA_STATUS_HQ_ANDROID = 'media:status:a1';
 export const MEDIA_LIVE_WALLPAPER = 'media:live:v1';
 
 function compactMediaSourceToken(sourceUrl = '') {
@@ -73,6 +74,7 @@ export function galleryMediaActionButtons(sourceMessageId = 0, fileSize = 0) {
     reply_markup: {
       inline_keyboard: [
         [{ text: '📱 Status HQ', callback_data: `${MEDIA_STATUS_HQ}${suffix}` }],
+        [{ text: '🤖 Status HQ Android (Beta)', callback_data: `${MEDIA_STATUS_HQ_ANDROID}${suffix}` }],
         [{ text: '🍎 Live Wallpaper iPhone', callback_data: `${MEDIA_LIVE_WALLPAPER}${suffix}` }],
       ],
     },
