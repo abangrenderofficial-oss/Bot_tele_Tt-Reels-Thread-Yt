@@ -34,6 +34,7 @@ export function commandMenuText(userId) {
       '/resetadmin — Reset & recovery semua user',
       '/connect — Sambung group pemantauan',
       '/disconnect — Putus group pemantauan',
+      '/totaluser — Statistik penggunaan bot',
     );
   }
   return lines.join('\n');
