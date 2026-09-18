@@ -1,75 +1,136 @@
+import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import path from 'node:path';
 import { sendMessage, telegram } from '../telegram.js';
 
-const RPC_RECORD = 'record_downloader_usage';
-const RPC_STATS = 'get_downloader_usage_stats';
 const EVENT_TYPES = new Set(['download', 'status_hq', 'live_wallpaper']);
+const STATS_FILE = String(process.env.STATS_FILE_PATH || '/data/bot-stats.json');
+const STATS_VERSION = 1;
 
-function config() {
-  const url = String(process.env.STATS_SUPABASE_URL || '').replace(/\/$/, '');
-  const key = String(process.env.STATS_SUPABASE_KEY || '').trim();
-  const secret = String(process.env.STATS_RPC_SECRET || '').trim();
-  return { url, key, secret, ready: Boolean(url && key && secret) };
+let statePromise = null;
+let writeQueue = Promise.resolve();
+
+function emptyState() {
+  return {
+    version: STATS_VERSION,
+    trackingSince: new Date().toISOString(),
+    users: {},
+    monthlyDownloads: {},
+  };
 }
 
-async function rpc(functionName, body) {
-  const { url, key, ready } = config();
-  if (!ready) return null;
+function normalizeState(raw) {
+  const fallback = emptyState();
+  if (!raw || typeof raw !== 'object') return fallback;
+  return {
+    version: STATS_VERSION,
+    trackingSince: typeof raw.trackingSince === 'string' && raw.trackingSince
+      ? raw.trackingSince
+      : fallback.trackingSince,
+    users: raw.users && typeof raw.users === 'object' ? raw.users : {},
+    monthlyDownloads: raw.monthlyDownloads && typeof raw.monthlyDownloads === 'object'
+      ? raw.monthlyDownloads
+      : {},
+  };
+}
 
-  const response = await fetch(`${url}/rest/v1/rpc/${functionName}`, {
-    method: 'POST',
-    headers: {
-      apikey: key,
-      Authorization: `Bearer ${key}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(8000),
-  });
-
-  if (!response.ok) {
-    const detail = await response.text().catch(() => '');
-    throw new Error(`Stats RPC ${functionName} failed (${response.status}): ${detail.slice(0, 300)}`);
+async function loadState() {
+  if (!statePromise) {
+    statePromise = (async () => {
+      try {
+        const text = await readFile(STATS_FILE, 'utf8');
+        return normalizeState(JSON.parse(text));
+      } catch (error) {
+        if (error?.code !== 'ENOENT') console.warn('[stats] load failed:', error?.message);
+        return emptyState();
+      }
+    })();
   }
+  return statePromise;
+}
 
-  if (response.status === 204) return null;
-  return response.json().catch(() => null);
+async function persistState(state) {
+  await mkdir(path.dirname(STATS_FILE), { recursive: true });
+  const temp = `${STATS_FILE}.${process.pid}.tmp`;
+  await writeFile(temp, `${JSON.stringify(state)}\n`, 'utf8');
+  await rename(temp, STATS_FILE);
+}
+
+function mutate(mutator) {
+  writeQueue = writeQueue.then(async () => {
+    const state = await loadState();
+    mutator(state);
+    await persistState(state);
+  }).catch((error) => {
+    console.error('[stats] write failed:', error?.message);
+  });
+  return writeQueue;
+}
+
+function validUserKey(userId) {
+  const id = Number(userId || 0);
+  if (!Number.isSafeInteger(id) || id <= 0) return '';
+  return String(id);
+}
+
+function monthKey(date = new Date()) {
+  const year = date.getUTCFullYear();
+  const month = String(date.getUTCMonth() + 1).padStart(2, '0');
+  return `${year}-${month}`;
+}
+
+function touchUser(state, userId, now = new Date()) {
+  const key = validUserKey(userId);
+  if (!key) return null;
+  const iso = now.toISOString();
+  const old = state.users[key] && typeof state.users[key] === 'object' ? state.users[key] : {};
+  const user = {
+    firstSeen: old.firstSeen || iso,
+    lastSeen: iso,
+    statusHq: Boolean(old.statusHq),
+    liveWallpaper: Boolean(old.liveWallpaper),
+  };
+  state.users[key] = user;
+  return user;
 }
 
 export async function recordUsage(userId, eventType = null) {
-  const id = Number(userId || 0);
-  if (!Number.isSafeInteger(id) || id <= 0) return false;
+  const key = validUserKey(userId);
+  if (!key) return false;
   if (eventType && !EVENT_TYPES.has(eventType)) return false;
 
-  const { secret, ready } = config();
-  if (!ready) return false;
+  await mutate((state) => {
+    const now = new Date();
+    const user = touchUser(state, userId, now);
+    if (!user) return;
 
-  try {
-    await rpc(RPC_RECORD, {
-      p_secret: secret,
-      p_user_id: id,
-      p_event_type: eventType || null,
-    });
-    return true;
-  } catch (error) {
-    console.warn('[stats/record] failed:', error?.message);
-    return false;
-  }
+    if (eventType === 'download') {
+      const month = monthKey(now);
+      state.monthlyDownloads[month] = Math.max(0, Number(state.monthlyDownloads[month] || 0)) + 1;
+    } else if (eventType === 'status_hq') {
+      user.statusHq = true;
+    } else if (eventType === 'live_wallpaper') {
+      user.liveWallpaper = true;
+    }
+  });
+  return true;
 }
 
 export async function getUsageStats() {
-  const { secret, ready } = config();
-  if (!ready) throw new Error('Stats storage is not configured.');
-
-  const payload = await rpc(RPC_STATS, { p_secret: secret });
-  const row = Array.isArray(payload) ? payload[0] : payload;
-  if (!row) throw new Error('Stats RPC returned no data.');
+  await writeQueue;
+  const state = await loadState();
+  const users = Object.values(state.users || {});
+  const cutoff = Date.now() - (30 * 24 * 60 * 60 * 1000);
 
   return {
-    totalUsers: Number(row.total_users || 0),
-    active30Days: Number(row.active_30_days || 0),
-    downloadsThisMonth: Number(row.downloads_this_month || 0),
-    statusHqUsers: Number(row.status_hq_users || 0),
-    liveWallpaperUsers: Number(row.live_wallpaper_users || 0),
+    totalUsers: users.length,
+    active30Days: users.filter((user) => {
+      const lastSeen = Date.parse(String(user?.lastSeen || ''));
+      return Number.isFinite(lastSeen) && lastSeen >= cutoff;
+    }).length,
+    downloadsThisMonth: Math.max(0, Number(state.monthlyDownloads?.[monthKey()] || 0)),
+    statusHqUsers: users.filter((user) => Boolean(user?.statusHq)).length,
+    liveWallpaperUsers: users.filter((user) => Boolean(user?.liveWallpaper)).length,
+    trackingSince: state.trackingSince,
   };
 }
 
@@ -79,6 +140,8 @@ function number(value) {
 
 async function isGroupAdmin(chatId, userId) {
   if (!chatId || !userId) return false;
+  const ownerId = String(process.env.BOT_OWNER_ID || '').trim();
+  if (ownerId && String(userId) === ownerId) return true;
   try {
     const member = await telegram('getChatMember', { chat_id: chatId, user_id: userId });
     return member?.status === 'creator' || member?.status === 'administrator';
