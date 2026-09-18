@@ -17,7 +17,7 @@ on:
         default: '0'
         type: string
       action:
-        description: status_hq or live_wallpaper
+        description: status_hq, status_hq_android or live_wallpaper
         required: true
         default: status_hq
         type: string
@@ -46,7 +46,7 @@ concurrency:
 
 jobs:
   status_hq:
-    if: ${{ inputs.action == 'status_hq' }}
+    if: ${{ inputs.action == 'status_hq' || inputs.action == 'status_hq_android' }}
     runs-on: ubuntu-latest
     timeout-minutes: 25
     env:
@@ -56,7 +56,7 @@ jobs:
       HEAVY_CHAT_ID: ${{ inputs.chat_id }}
       HEAVY_VIDEO_FILE_ID: ${{ inputs.video_file_id }}
       HEAVY_FILE_SIZE: ${{ inputs.file_size }}
-      HEAVY_ACTION: status_hq
+      HEAVY_ACTION: ${{ inputs.action }}
       HEAVY_PROGRESS_MESSAGE_ID: ${{ inputs.progress_message_id }}
       HEAVY_SOURCE_MESSAGE_ID: ${{ inputs.source_message_id }}
       HEAVY_VIDEO_MAX_MB: '500'
