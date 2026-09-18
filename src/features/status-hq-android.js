@@ -23,10 +23,10 @@ export async function processStatusAndroidButton(callbackQuery, context = {}) {
   const heavyCandidate = Boolean(gallery && videoFileId && shouldUseHeavyWorker({ file_size: fileSize }));
   if (!chatId) return true;
 
-  if (!gallery || !videoFileId) {
+  if (!videoFileId) {
     await telegram('answerCallbackQuery', {
       callback_query_id: callbackQuery.id,
-      text: 'Android Compatibility Beta buat masa ini untuk video Gallery sahaja.',
+      text: 'Android Compatibility Beta hanya untuk video.',
       show_alert: true,
     }).catch(() => {});
     return true;
@@ -35,7 +35,7 @@ export async function processStatusAndroidButton(callbackQuery, context = {}) {
   if (fileSize > heavyVideoLimitBytes()) {
     await telegram('answerCallbackQuery', {
       callback_query_id: callbackQuery.id,
-      text: '❌ Buat masa ini video Gallery maksimum 500MB.',
+      text: '❌ Buat masa ini video maksimum 500MB.',
       show_alert: true,
     }).catch(() => {});
     return true;
@@ -89,6 +89,9 @@ export async function processStatusAndroidButton(callbackQuery, context = {}) {
   let prepared = null;
   const progress = await startStatusProgress(chatId);
   try {
+    // For Gallery and social-link results alike, reuse Telegram's existing
+    // video file_id. This avoids a second social download and keeps the Android
+    // profile isolated from the platform resolver/downloader path.
     const telegramVideo = await getTelegramFileSource(videoFileId);
     prepared = await localMediaLane(() => prepareWhatsAppStatusAndroidHQ({ video: telegramVideo }));
     if (cancelled(fence)) {
