@@ -3,6 +3,7 @@ import { telegram } from '../telegram.js';
 
 export const MEDIA_STATUS_HQ = 'media:status:v2';
 export const MEDIA_STATUS_HQ_ANDROID = 'media:status:a1';
+export const MEDIA_STATUS_HQ_MENU = 'media:status:m1';
 export const MEDIA_LIVE_WALLPAPER = 'media:live:v1';
 
 function compactMediaSourceToken(sourceUrl = '') {
@@ -66,18 +67,31 @@ export function imageStatusButton() {
   };
 }
 
-export function galleryMediaActionButtons(sourceMessageId = 0, fileSize = 0) {
+function gallerySuffix(sourceMessageId = 0, fileSize = 0) {
   const messageId = Math.max(0, Number(sourceMessageId || 0));
   const size = Math.max(0, Number(fileSize || 0));
-  const suffix = `|g:${messageId}:${size}`;
+  return `|g:${messageId}:${size}`;
+}
+
+export function galleryMediaActionButtons(sourceMessageId = 0, fileSize = 0) {
+  const suffix = gallerySuffix(sourceMessageId, fileSize);
   return {
     reply_markup: {
       inline_keyboard: [
-        [{ text: '📱 Status HQ', callback_data: `${MEDIA_STATUS_HQ}${suffix}` }],
-        [{ text: '🤖 Status HQ Android (Beta)', callback_data: `${MEDIA_STATUS_HQ_ANDROID}${suffix}` }],
+        [{ text: '📱 Status HQ', callback_data: `${MEDIA_STATUS_HQ_MENU}${suffix}` }],
         [{ text: '🍎 Live Wallpaper iPhone', callback_data: `${MEDIA_LIVE_WALLPAPER}${suffix}` }],
       ],
     },
+  };
+}
+
+export function galleryStatusProfileButtons(sourceMessageId = 0, fileSize = 0) {
+  const suffix = gallerySuffix(sourceMessageId, fileSize);
+  return {
+    inline_keyboard: [
+      [{ text: '✨ Standard HQ', callback_data: `${MEDIA_STATUS_HQ}${suffix}` }],
+      [{ text: '🤖 Android Compatibility (Beta)', callback_data: `${MEDIA_STATUS_HQ_ANDROID}${suffix}` }],
+    ],
   };
 }
 
