@@ -1,5 +1,5 @@
 import { createWriteStream } from 'node:fs';
-import { rm, stat } from 'node:fs/promises';
+import { chmod, rm, stat } from 'node:fs/promises';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { execFile } from 'node:child_process';
@@ -22,6 +22,20 @@ function commandOptions(timeoutMs) {
       PATH: `${path.dirname(process.execPath)}:${process.env.PATH || ''}`,
     },
   };
+}
+
+function ytdlpBinary() {
+  return path.join(process.cwd(), 'bin', 'yt-dlp');
+}
+
+function ytdlpCommonArgs() {
+  return [
+    '--no-playlist',
+    '--no-warnings',
+    '--no-check-certificates',
+    '--js-runtimes', `node:${process.execPath}`,
+    '--remote-components', 'ejs:github',
+  ];
 }
 
 function sourceHeaders(headers) {
@@ -81,6 +95,49 @@ async function downloadSourceVideo(item, filePath) {
     error.code = 'STATUS_ANDROID_SOURCE_EMPTY';
     throw error;
   }
+  return filePath;
+}
+
+async function downloadWithYtDlp(sourceUrl, outputBase, platform = 'generic') {
+  if (!sourceUrl) {
+    const error = new Error('Android Status HQ original social URL is missing.');
+    error.code = 'STATUS_ANDROID_SOURCE_URL_MISSING';
+    throw error;
+  }
+
+  const binary = ytdlpBinary();
+  await chmod(binary, 0o755).catch(() => {});
+  const outputTemplate = `${outputBase}.%(ext)s`;
+  const format = platform === 'youtube'
+    ? 'bestvideo[height<=1080]+bestaudio/best[height<=1080]'
+    : 'best[height<=1080]/best';
+  const args = [
+    ...ytdlpCommonArgs(),
+    '--format', format,
+    '--merge-output-format', 'mp4',
+    '--ffmpeg-location', ffmpegPath,
+    '--no-progress',
+    '--output', outputTemplate,
+    '--print', 'after_move:filepath',
+    '--',
+    sourceUrl,
+  ];
+  const timeout = platform === 'youtube'
+    ? Number(process.env.STATUS_ANDROID_YOUTUBE_TIMEOUT_MS || 90000)
+    : Number(process.env.STATUS_ANDROID_YTDLP_TIMEOUT_MS || 120000);
+  const { stdout } = await execFileAsync(binary, args, commandOptions(timeout));
+  const reported = String(stdout || '').split(/\r?\n/).map((line) => line.trim()).filter(Boolean).at(-1);
+  const candidates = [reported, `${outputBase}.mp4`, `${outputBase}.mkv`, `${outputBase}.webm`, `${outputBase}.mov`].filter(Boolean);
+  for (const candidate of candidates) {
+    try {
+      const info = await stat(candidate);
+      if (info.isFile() && info.size) return candidate;
+    } catch {}
+  }
+
+  const error = new Error(`${platform} Android Status HQ source could not be downloaded by yt-dlp.`);
+  error.code = 'STATUS_ANDROID_YTDLP_OUTPUT_MISSING';
+  throw error;
 }
 
 function parseClockDuration(value) {
@@ -205,14 +262,27 @@ async function cleanup(paths) {
   await Promise.all([...new Set(paths)].map((filePath) => rm(filePath, { force: true }).catch(() => {})));
 }
 
-export async function prepareWhatsAppStatusAndroidHQ({ video }) {
+export async function prepareWhatsAppStatusAndroidHQ({ video, sourceUrl = '', platform = 'generic' }) {
   const attemptId = randomUUID();
   const base = path.join(tmpdir(), `ar-status-android-${attemptId}`);
-  const inputPath = `${base}-source.${String(video?.ext || 'mp4').replace(/[^a-z0-9]/gi, '') || 'mp4'}`;
+  let inputPath = `${base}-source.${String(video?.ext || 'mp4').replace(/[^a-z0-9]/gi, '') || 'mp4'}`;
   const paths = [inputPath];
 
   try {
-    await downloadSourceVideo(video, inputPath);
+    try {
+      await downloadSourceVideo(video, inputPath);
+    } catch (directError) {
+      if (!sourceUrl) throw directError;
+      console.warn(
+        '[status-hq/android] direct source fetch failed; falling back to yt-dlp:',
+        directError?.code,
+        directError?.message,
+      );
+      await rm(inputPath, { force: true }).catch(() => {});
+      inputPath = await downloadWithYtDlp(sourceUrl, `${base}-source-ytdlp`, platform || 'generic');
+      paths.push(inputPath);
+    }
+
     const probe = await probeLocalVideo(inputPath);
     const plan = chooseAndroidPlan(probe);
     const safeLimit = whatsappSafeOutputBytes();
