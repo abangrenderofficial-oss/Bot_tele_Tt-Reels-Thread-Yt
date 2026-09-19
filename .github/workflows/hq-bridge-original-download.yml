@@ -10,15 +10,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install yt-dlp and ffmpeg
+      - name: Install downloader
         run: |
-          python -m pip install -U yt-dlp
+          python -m pip install -U 'yt-dlp[default,curl-cffi]'
           sudo apt-get update -y
           sudo apt-get install -y ffmpeg
       - name: Download TikTok original
         run: |
           mkdir -p out
-          yt-dlp --no-playlist --merge-output-format mp4 -f 'bv*+ba/b' -o 'out/original.%(ext)s' 'https://vt.tiktok.com/ZSqt88bX7'
+          yt-dlp --impersonate chrome --no-playlist --merge-output-format mp4 -f 'bv*+ba/b' -o 'out/original.%(ext)s' 'https://www.tiktok.com/@pokanepridumaluser/video/7685067454149709076'
           f=$(find out -maxdepth 1 -type f | head -n 1)
           ffmpeg -y -i "$f" -c copy -movflags +faststart out/bridge_original.mp4 || cp "$f" out/bridge_original.mp4
           ffprobe -v error -show_entries format=duration,size,bit_rate -show_entries stream=index,codec_type,codec_name,width,height,avg_frame_rate,bit_rate -of default=nw=1 out/bridge_original.mp4
