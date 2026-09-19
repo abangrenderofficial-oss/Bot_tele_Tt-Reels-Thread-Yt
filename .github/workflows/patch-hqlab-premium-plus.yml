@@ -1,0 +1,237 @@
+name: Patch HQ Lab Premium Plus
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/patch-hqlab-premium-plus.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Patch HQ Lab to four test variants
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          core = Path('src/hq-lab.js')
+          text = core.read_text()
+
+          old = """function variantsFor(probe) {
+  const base = currentPlan(probe);
+  const cBox = cappedSourceBox(probe, 1920, 1080);
+
+  return [
+    {
+      id: 'C', slug: 'c', name: 'Sharp HQ', label: 'C  SHARP HQ',
+      ...base,
+      ...cBox,
+      preset: 'fast',
+      scaleFlags: 'lanczos',
+      filters: ['unsharp=5:5:0.45:3:3:0.0'],
+      tune: 'film',
+    },
+    {
+      id: 'C+', slug: 'cplus', name: 'C+ HQ', label: 'C+  HQ',
+      ...base,
+      ...cBox,
+      preset: 'fast',
+      scaleFlags: 'lanczos',
+      filters: [
+        'hqdn3d=0.35:0.35:1.5:1.5',
+        'unsharp=5:5:0.36:3:3:0.0',
+        'eq=contrast=1.015:saturation=1.01',
+      ],
+      tune: 'film',
+    },
+    {
+      id: 'C BALANCE', slug: 'cbalance', name: 'C Balance HQ', label: 'C BALANCE HQ',
+      ...base,
+      ...cBox,
+      preset: 'fast',
+      scaleFlags: 'lanczos',
+      filters: [
+        'hqdn3d=0.25:0.25:1.0:1.0',
+        'unsharp=5:5:0.28:3:3:0.0',
+        'eq=contrast=1.008:saturation=1.005',
+      ],
+      tune: 'film',
+    },
+  ];
+}
+"""
+
+          new = """function variantsFor(probe) {
+  const base = currentPlan(probe);
+  const cBox = cappedSourceBox(probe, 1920, 1080);
+  const premiumBox = cappedSourceBox(probe, 1280, 720);
+
+  return [
+    {
+      id: 'C', slug: 'c', name: 'Sharp HQ', label: 'C  SHARP HQ',
+      ...base,
+      ...cBox,
+      preset: 'fast',
+      scaleFlags: 'lanczos',
+      filters: ['unsharp=5:5:0.45:3:3:0.0'],
+      tune: 'film',
+    },
+    {
+      id: 'C+', slug: 'cplus', name: 'C+ HQ', label: 'C+  HQ',
+      ...base,
+      ...cBox,
+      preset: 'fast',
+      scaleFlags: 'lanczos',
+      filters: [
+        'hqdn3d=0.35:0.35:1.5:1.5',
+        'unsharp=5:5:0.36:3:3:0.0',
+        'eq=contrast=1.015:saturation=1.01',
+      ],
+      tune: 'film',
+    },
+    {
+      id: 'C BALANCE', slug: 'cbalance', name: 'C Balance HQ', label: 'C BALANCE HQ',
+      ...base,
+      ...cBox,
+      preset: 'fast',
+      scaleFlags: 'lanczos',
+      filters: [
+        'hqdn3d=0.25:0.25:1.0:1.0',
+        'unsharp=5:5:0.28:3:3:0.0',
+        'eq=contrast=1.008:saturation=1.005',
+      ],
+      tune: 'film',
+    },
+    {
+      id: 'PREMIUM+', slug: 'premiumplus', name: 'Premium + HQ', label: 'PREMIUM + HQ',
+      ...base,
+      ...premiumBox,
+      videoKbps: Math.min(3350, base.videoKbps),
+      preset: 'veryfast',
+      scaleFlags: 'lanczos',
+      filters: [
+        'hqdn3d=0.18:0.18:0.70:0.70',
+        'unsharp=5:5:0.18:3:3:0.0',
+        'eq=contrast=1.012:saturation=1.015',
+      ],
+      profile: 'main',
+      level: '3.1',
+      tag: 'avc1',
+      audioRate: 48000,
+      audioProfile: 'aac_low',
+      gop: 60,
+      keyintMin: 30,
+      scThreshold: 0,
+      maxRateKbps: 3900,
+      bufferKbps: 7800,
+    },
+  ];
+}
+"""
+
+          if old not in text:
+              raise SystemExit('variantsFor target block not found; refusing unsafe patch')
+          text = text.replace(old, new, 1)
+
+          old = """async function encodeVariant(inputPath, outputPath, variant, burnLabel, hasAudio) {
+  await rm(outputPath, { force: true }).catch(() => {});
+  const maxRate = Math.max(variant.videoKbps, Math.floor(variant.videoKbps * 1.18));
+  const buffer = Math.max(1000, maxRate * 2);
+  const filter = await videoFilter(variant, burnLabel);
+  const args = [
+    '-y', '-hide_banner', '-loglevel', 'error', '-nostats', '-nostdin',
+    '-filter_threads', '1',
+    '-i', inputPath,
+    '-map', '0:v:0', ...(hasAudio ? ['-map', '0:a:0?'] : []),
+    '-vf', filter,
+    '-c:v', 'libx264', '-preset', variant.preset, '-pix_fmt', 'yuv420p',
+    '-b:v', `${variant.videoKbps}k`, '-maxrate', `${maxRate}k`, '-bufsize', `${buffer}k`,
+    '-profile:v', 'high', '-level:v', '4.0',
+    ...(variant.tune ? ['-tune', variant.tune] : []),
+    ...(hasAudio ? ['-c:a', 'aac', '-ar', '44100', '-ac', '2', '-b:a', `${variant.audioKbps || 128}k`] : ['-an']),
+    '-brand', 'isom', '-movflags', '+faststart', '-metadata:s:v:0', 'rotate=0',
+    '-map_metadata', '-1', '-f', 'mp4', '-threads', '1', outputPath,
+  ];
+"""
+
+          new = """async function encodeVariant(inputPath, outputPath, variant, burnLabel, hasAudio) {
+  await rm(outputPath, { force: true }).catch(() => {});
+  const requestedMaxRate = Number(variant.maxRateKbps || 0);
+  const maxRate = Math.max(
+    variant.videoKbps,
+    requestedMaxRate > 0 ? requestedMaxRate : Math.floor(variant.videoKbps * 1.18),
+  );
+  const requestedBuffer = Number(variant.bufferKbps || 0);
+  const buffer = Math.max(1000, requestedBuffer > 0 ? requestedBuffer : maxRate * 2);
+  const filter = await videoFilter(variant, burnLabel);
+  const args = [
+    '-y', '-hide_banner', '-loglevel', 'error', '-nostats', '-nostdin',
+    '-filter_threads', '1',
+    '-i', inputPath,
+    '-map', '0:v:0', ...(hasAudio ? ['-map', '0:a:0?'] : []),
+    '-vf', filter,
+    '-c:v', 'libx264', '-preset', variant.preset, '-pix_fmt', 'yuv420p',
+    '-b:v', `${variant.videoKbps}k`, '-maxrate', `${maxRate}k`, '-bufsize', `${buffer}k`,
+    '-profile:v', variant.profile || 'high', '-level:v', variant.level || '4.0',
+    ...(variant.tag ? ['-tag:v', variant.tag] : []),
+    ...(variant.gop ? ['-g', String(variant.gop)] : []),
+    ...(variant.keyintMin ? ['-keyint_min', String(variant.keyintMin)] : []),
+    ...(Number.isFinite(Number(variant.scThreshold)) ? ['-sc_threshold', String(variant.scThreshold)] : []),
+    ...(variant.tune ? ['-tune', variant.tune] : []),
+    ...(hasAudio ? [
+      '-c:a', 'aac',
+      ...(variant.audioProfile ? ['-profile:a', variant.audioProfile] : []),
+      '-ar', String(variant.audioRate || 44100), '-ac', '2', '-b:a', `${variant.audioKbps || 128}k`,
+    ] : ['-an']),
+    '-brand', 'isom', '-movflags', '+faststart', '-metadata:s:v:0', 'rotate=0',
+    '-map_metadata', '-1', '-f', 'mp4', '-threads', '1', outputPath,
+  ];
+"""
+
+          if old not in text:
+              raise SystemExit('encodeVariant target block not found; refusing unsafe patch')
+          text = text.replace(old, new, 1)
+          core.write_text(text)
+
+          feature = Path('src/features/hq-lab.js')
+          text = feature.read_text()
+          replacements = {
+            "'Bot akan hasilkan 3 versi dari source yang sama:'": "'Bot akan hasilkan 4 versi dari source yang sama:'",
+            "'C Sharp HQ • C+ HQ • C Balance HQ'": "'C Sharp HQ • C+ HQ • C Balance HQ • Premium + HQ'",
+            "'C Balance = sharpening lebih lembut/natural.'": "'C Balance = sharpening lebih lembut/natural.',\n      'Premium + HQ = rupa Premium yang natural/cinematic + detail rescue ringan.'",
+            "'Upload ketiga-tiga ke WhatsApp Status dan compare selepas WhatsApp compress.'": "'Upload keempat-empat ke WhatsApp Status dan compare selepas WhatsApp compress.'",
+            "'🧪 HQ Lab sedang buat 3 versi: C, C+ dan C Balance. Production user lain tak terjejas.'": "'🧪 HQ Lab sedang buat 4 versi: C, C+, C Balance dan Premium + HQ. Production user lain tak terjejas.'",
+            "`✅ HQ Lab siap: C, C+ dan C Balance. Audio source: ${prepared.source?.hasAudio ? 'ada ✅' : 'tiada'}. Upload semua ke WhatsApp Status dan compare detail, naturalness dan motion selepas compression.`": "`✅ HQ Lab siap: C, C+, C Balance dan Premium + HQ. Audio source: ${prepared.source?.hasAudio ? 'ada ✅' : 'tiada'}. Upload semua ke WhatsApp Status dan compare detail, naturalness, skin/texture dan motion selepas compression.`",
+          }
+          for old, new in replacements.items():
+              if old not in text:
+                  raise SystemExit(f'feature target not found: {old}')
+              text = text.replace(old, new, 1)
+          feature.write_text(text)
+          PY
+
+      - name: Validate syntax and boundaries
+        run: |
+          node --check src/hq-lab.js
+          node --check src/features/hq-lab.js
+          npm run check:boundaries --if-present
+
+      - name: Commit production patch and remove one-off workflow
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git rm .github/workflows/patch-hqlab-premium-plus.yml
+          git add src/hq-lab.js src/features/hq-lab.js
+          git commit -m 'Add Premium Plus to HQ Lab comparison'
+          git push origin HEAD:main
