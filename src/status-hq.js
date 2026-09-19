@@ -183,6 +183,28 @@ function targetOutputBytes() {
   return Math.floor(Math.min(requested, uploadLimit * 0.9));
 }
 
+function dimensionsForTier(probe, tier) {
+  const width = Number(probe.width || 0);
+  const height = Number(probe.height || 0);
+  const landscape = width > height;
+  const squareish = width && height && Math.abs(width - height) / Math.max(width, height) < 0.08;
+
+  if (squareish) {
+    const side = tier === 1080 ? 1080 : tier === 720 ? 720 : tier === 540 ? 540 : 360;
+    return { maxWidth: side, maxHeight: side };
+  }
+  if (landscape) {
+    if (tier === 1080) return { maxWidth: 1920, maxHeight: 1080 };
+    if (tier === 720) return { maxWidth: 1280, maxHeight: 720 };
+    if (tier === 540) return { maxWidth: 960, maxHeight: 540 };
+    return { maxWidth: 640, maxHeight: 360 };
+  }
+  if (tier === 1080) return { maxWidth: 1080, maxHeight: 1920 };
+  if (tier === 720) return { maxWidth: 720, maxHeight: 1280 };
+  if (tier === 540) return { maxWidth: 540, maxHeight: 960 };
+  return { maxWidth: 360, maxHeight: 640 };
+}
+
 function chooseEncodePlan(probe) {
   const duration = Math.max(1, Number(probe.duration || 0));
   const audioKbps = 128;
@@ -196,45 +218,49 @@ function chooseEncodePlan(probe) {
   else if (videoKbps >= 650) tier = 540;
   else tier = 360;
 
-  const width = Number(probe.width || 0);
-  const height = Number(probe.height || 0);
-  const landscape = width > height;
-  const squareish = width && height && Math.abs(width - height) / Math.max(width, height) < 0.08;
   const longForm = duration >= 180;
   const veryLong = duration >= 420;
   if (veryLong && tier > 540) tier = 540;
-
-  let maxWidth;
-  let maxHeight;
-  if (squareish) {
-    const side = tier === 1080 ? 1080 : tier === 720 ? 720 : tier === 540 ? 540 : 360;
-    maxWidth = side; maxHeight = side;
-  } else if (landscape) {
-    if (tier === 1080) [maxWidth, maxHeight] = [1920, 1080];
-    else if (tier === 720) [maxWidth, maxHeight] = [1280, 720];
-    else if (tier === 540) [maxWidth, maxHeight] = [960, 540];
-    else [maxWidth, maxHeight] = [640, 360];
-  } else {
-    if (tier === 1080) [maxWidth, maxHeight] = [1080, 1920];
-    else if (tier === 720) [maxWidth, maxHeight] = [720, 1280];
-    else if (tier === 540) [maxWidth, maxHeight] = [540, 960];
-    else [maxWidth, maxHeight] = [360, 640];
-  }
+  const dimensions = dimensionsForTier(probe, tier);
 
   return {
     targetBytes,
     audioKbps,
     videoKbps,
     tier,
-    maxWidth,
-    maxHeight,
+    ...dimensions,
     duration,
     fps: '30000/1001',
     preset: longForm ? 'superfast' : (videoKbps >= 1800 ? 'fast' : 'veryfast'),
     scaleFlags: longForm ? 'bicubic' : 'lanczos',
-    threads: Math.max(1, Math.min(2, Number(process.env.STATUS_FFMPEG_THREADS || 2))),
-    filterThreads: Math.max(1, Math.min(2, Number(process.env.STATUS_FILTER_THREADS || 1))),
+    threads: 1,
+    filterThreads: 1,
   };
+}
+
+function resourceSafePlan(plan, probe) {
+  const tier = Math.min(Number(plan.tier || 720), 720);
+  return {
+    ...plan,
+    ...dimensionsForTier(probe, tier),
+    tier,
+    videoKbps: Math.min(Number(plan.videoKbps || 3000), 3000),
+    preset: 'veryfast',
+    scaleFlags: 'lanczos',
+    threads: 1,
+    filterThreads: 1,
+  };
+}
+
+function isResourceFailure(error) {
+  const signal = String(error?.signal || '').toUpperCase();
+  const code = String(error?.code || '').toUpperCase();
+  const message = String(error?.message || '').toUpperCase();
+  return signal === 'SIGKILL'
+    || code === 'ENOMEM'
+    || message.includes('SIGKILL')
+    || message.includes('OUT OF MEMORY')
+    || message.includes('ENOMEM');
 }
 
 function statusVideoFilter(plan) {
@@ -265,7 +291,7 @@ async function encodeSingleStatusFile(inputPath, outputPath, plan, bitrateScale 
     '-profile:v', 'high', '-level:v', '4.0',
     '-c:a', 'aac', '-ar', '44100', '-ac', '2', '-b:a', `${plan.audioKbps}k`,
     '-brand', 'isom', '-movflags', '+faststart', '-metadata:s:v:0', 'rotate=0',
-    '-map_metadata', '-1', '-f', 'mp4', '-threads', String(plan.threads ?? 2), outputPath,
+    '-map_metadata', '-1', '-f', 'mp4', '-threads', String(plan.threads ?? 1), outputPath,
   ];
 
   try {
@@ -319,6 +345,8 @@ export async function prepareWhatsAppStatusHQ({ sourceUrl, platform, video }) {
 
     const probe = await probeLocalVideo(inputPath);
     const plan = chooseEncodePlan(probe);
+    let activePlan = plan;
+    let resourceFallbackUsed = false;
     const safeLimit = Math.floor(configuredUploadLimitBytes() * 0.94);
     const attempts = [1, 0.84, 0.7];
     let encoded = null;
@@ -328,7 +356,18 @@ export async function prepareWhatsAppStatusHQ({ sourceUrl, platform, video }) {
     for (let index = 0; index < attempts.length; index += 1) {
       outputPath = `${base}-status-a${index + 1}.mp4`;
       allPaths.push(outputPath);
-      encoded = await encodeSingleStatusFile(inputPath, outputPath, plan, attempts[index]);
+      try {
+        encoded = await encodeSingleStatusFile(inputPath, outputPath, activePlan, attempts[index]);
+      } catch (error) {
+        if (!resourceFallbackUsed && isResourceFailure(error)) {
+          resourceFallbackUsed = true;
+          activePlan = resourceSafePlan(plan, probe);
+          console.warn('[status-hq] FFmpeg resource kill detected; retrying with safe 720p/1-thread plan.');
+          index -= 1;
+          continue;
+        }
+        throw error;
+      }
       usedAttempt = index + 1;
       if (encoded.size <= safeLimit) break;
       await rm(outputPath, { force: true }).catch(() => {});
@@ -346,10 +385,11 @@ export async function prepareWhatsAppStatusHQ({ sourceUrl, platform, video }) {
       size: encoded.size,
       source: probe,
       profile: {
-        mode: 'single', tier: plan.tier, maxWidth: plan.maxWidth, maxHeight: plan.maxHeight,
-        videoKbps: encoded.videoKbps, audioKbps: plan.audioKbps,
+        mode: 'single', tier: activePlan.tier, maxWidth: activePlan.maxWidth, maxHeight: activePlan.maxHeight,
+        videoKbps: encoded.videoKbps, audioKbps: activePlan.audioKbps,
+        resourceFallbackUsed,
       },
-      quality: `Status HQ • single file • ${plan.tier}p class • H.264/AAC • ratio asal`,
+      quality: `Status HQ • single file • ${activePlan.tier}p class • H.264/AAC • ratio asal${resourceFallbackUsed ? ' • safe fallback' : ''}`,
       attempt: usedAttempt,
       cleanup: async () => cleanup(allPaths),
     };
