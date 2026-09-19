@@ -149,23 +149,29 @@ export async function processStatusButton(callbackQuery, context = {}) {
       await sendDocumentFileUpload(chatId, prepared.filePath, 'Gambar ni dah ready untuk upload ke status ✅', 'status-hq.jpg');
     } else {
       prepared = await localMediaLane(async () => {
-        let sourceError = null;
-        if (sourceUrl && sourcePlatform) {
-          try {
-            return await prepareStatusFromSourceUrl(sourceUrl, sourcePlatform);
-          } catch (error) {
-            sourceError = error;
-            console.warn('[status-hq] source path failed, trying Telegram file:', error?.code, error?.message);
-          }
-        }
+        let telegramError = null;
 
+        // The video already shown in Telegram is the safest audio-preserving source.
+        // Some social resolvers can expose a high-quality video-only stream, which
+        // made Premium HQ look correct but lose its soundtrack after encoding.
         try {
           const telegramVideo = await getTelegramFileSource(fileId);
           return await prepareWhatsAppStatusHQ({ sourceUrl: '', platform: 'telegram', video: telegramVideo });
-        } catch (telegramFileError) {
-          if (sourceError) throw sourceError;
-          throw telegramFileError;
+        } catch (error) {
+          telegramError = error;
+          console.warn('[status-hq] Telegram source failed, trying original source URL:', error?.code, error?.message);
         }
+
+        if (sourceUrl && sourcePlatform) {
+          try {
+            return await prepareStatusFromSourceUrl(sourceUrl, sourcePlatform);
+          } catch (sourceError) {
+            if (telegramError) throw telegramError;
+            throw sourceError;
+          }
+        }
+
+        throw telegramError || new Error('No usable video source for Status HQ.');
       });
       if (cancelled(fence)) {
         await progress.remove();
