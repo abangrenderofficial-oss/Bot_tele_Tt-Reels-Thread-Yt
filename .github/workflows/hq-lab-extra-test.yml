@@ -1,0 +1,89 @@
+name: HQ Lab Extra Test
+
+on:
+  push:
+    branches:
+      - hq-lab-chat-test-20260919
+    paths:
+      - .github/workflows/hq-lab-extra-test.yml
+
+permissions:
+  contents: read
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install FFmpeg and curl
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg curl zip
+
+      - name: Download public stress-test clips
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p testsrc out
+          curl -L --fail --retry 3 -A 'Mozilla/5.0' 'https://www.pexels.com/download/video/31201746/' -o testsrc/outdoor-city.mp4
+          curl -L --fail --retry 3 -A 'Mozilla/5.0' 'https://www.pexels.com/download/video/35432925/' -o testsrc/nature-beach.mp4
+          curl -L --fail --retry 3 -A 'Mozilla/5.0' 'https://www.pexels.com/download/video/33029589/' -o testsrc/sky-clouds.mp4
+          curl -L --fail --retry 3 -A 'Mozilla/5.0' 'https://www.pexels.com/download/video/5978692/' -o testsrc/face-skin.mp4
+          curl -L --fail --retry 3 -A 'Mozilla/5.0' 'https://www.pexels.com/download/video/5684420/' -o testsrc/text-ui.mp4
+          curl -L --fail --retry 3 -A 'Mozilla/5.0' 'https://www.pexels.com/download/video/28537370/' -o testsrc/color-vibrant.mp4
+
+      - name: Render C, C+, C Balance and Premium HQ
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          render_all() {
+            input="$1"
+            folder="$2"
+            mkdir -p "out/$folder"
+            width=$(ffprobe -v error -select_streams v:0 -show_entries stream=width -of csv=p=0 "$input")
+            height=$(ffprobe -v error -select_streams v:0 -show_entries stream=height -of csv=p=0 "$input")
+
+            if [ "$width" -ge "$height" ]; then
+              cscale="scale=1920:1080:force_original_aspect_ratio=decrease:flags=lanczos"
+              pscale="scale=1280:720:force_original_aspect_ratio=decrease:flags=lanczos"
+            else
+              cscale="scale=1080:1920:force_original_aspect_ratio=decrease:flags=lanczos"
+              pscale="scale=720:1280:force_original_aspect_ratio=decrease:flags=lanczos"
+            fi
+
+            common_in=( -y -hide_banner -loglevel error -nostats -nostdin -t 12 -i "$input" -map 0:v:0 -map '0:a:0?' )
+            c_common=( -c:v libx264 -preset fast -pix_fmt yuv420p -b:v 4300k -maxrate 5074k -bufsize 10148k -profile:v high -level:v 4.0 -tune film -c:a aac -ar 44100 -ac 2 -b:a 128k -brand isom -movflags +faststart -map_metadata -1 -threads 1 )
+
+            ffmpeg "${common_in[@]}" -vf "$cscale,setsar=1,fps=29.970,unsharp=5:5:0.45:3:3:0.0" "${c_common[@]}" "out/$folder/01_C_Sharp_HQ.mp4"
+            ffmpeg "${common_in[@]}" -vf "$cscale,setsar=1,fps=29.970,hqdn3d=0.35:0.35:1.5:1.5,unsharp=5:5:0.36:3:3:0.0,eq=contrast=1.015:saturation=1.01" "${c_common[@]}" "out/$folder/02_C_Plus_HQ.mp4"
+            ffmpeg "${common_in[@]}" -vf "$cscale,setsar=1,fps=29.970,hqdn3d=0.25:0.25:1.0:1.0,unsharp=5:5:0.28:3:3:0.0,eq=contrast=1.008:saturation=1.005" "${c_common[@]}" "out/$folder/03_C_Balance_HQ.mp4"
+            ffmpeg "${common_in[@]}" -vf "$pscale,setsar=1,fps=30000/1001" -c:v libx264 -preset fast -pix_fmt yuv420p -b:v 3200k -maxrate 3776k -bufsize 7552k -profile:v main -level:v 3.1 -tag:v avc1 -g 60 -keyint_min 30 -sc_threshold 0 -c:a aac -profile:a aac_low -ar 48000 -ac 2 -b:a 128k -movflags +faststart -metadata:s:v:0 rotate=0 -map_metadata -1 -threads 1 "out/$folder/04_Premium_HQ.mp4"
+          }
+
+          render_all testsrc/outdoor-city.mp4 04_Outdoor_City
+          render_all testsrc/nature-beach.mp4 05_Nature_Beach
+          render_all testsrc/sky-clouds.mp4 06_Sky_Clouds
+          render_all testsrc/face-skin.mp4 07_Face_Skin_Tone
+          render_all testsrc/text-ui.mp4 08_Text_UI_Typing
+          render_all testsrc/color-vibrant.mp4 09_Color_Vibrant
+
+          cat > out/README.txt <<'EOF'
+          04 Outdoor City = Pexels 31201746
+          05 Nature Beach = Pexels 35432925
+          06 Sky Clouds = Pexels 33029589
+          07 Face Skin Tone = Pexels 5978692
+          08 Text UI Typing = Pexels 5684420
+          09 Color Vibrant = Pexels 28537370
+          Each output uses the same source segment within its category.
+          EOF
+
+      - name: Upload comparison files
+        uses: actions/upload-artifact@v4
+        with:
+          name: hq-lab-extra-comparison
+          path: out/
+          if-no-files-found: error
+          retention-days: 1
