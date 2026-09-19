@@ -1,0 +1,99 @@
+name: HQ Lab Chat Test
+
+on:
+  push:
+    branches:
+      - hq-lab-chat-test-20260919
+    paths:
+      - .github/workflows/hq-lab-chat-test.yml
+
+permissions:
+  contents: read
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install FFmpeg and curl
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg curl
+
+      - name: Download public stress-test clips
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p testsrc out
+          curl -L --fail --retry 3 -A 'Mozilla/5.0' 'https://www.pexels.com/download/video/10002493/' -o testsrc/architecture.mp4
+          curl -L --fail --retry 3 -A 'Mozilla/5.0' 'https://www.pexels.com/download/video/13658220/' -o testsrc/night-city.mp4
+          curl -L --fail --retry 3 -A 'Mozilla/5.0' 'https://www.pexels.com/download/video/12221720/' -o testsrc/leaves-water.mp4
+          for f in testsrc/*.mp4; do
+            ffprobe -v error -show_entries stream=codec_name,width,height,r_frame_rate -show_entries format=duration -of default=nw=1 "$f"
+          done
+
+      - name: Render C, C+, C Balance and Premium HQ
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          render_all() {
+            input="$1"
+            name="$2"
+            width=$(ffprobe -v error -select_streams v:0 -show_entries stream=width -of csv=p=0 "$input")
+            height=$(ffprobe -v error -select_streams v:0 -show_entries stream=height -of csv=p=0 "$input")
+
+            if [ "$width" -ge "$height" ]; then
+              cscale="scale=1920:1080:force_original_aspect_ratio=decrease:flags=lanczos"
+              pscale="scale=1280:720:force_original_aspect_ratio=decrease:flags=lanczos"
+            else
+              cscale="scale=1080:1920:force_original_aspect_ratio=decrease:flags=lanczos"
+              pscale="scale=720:1280:force_original_aspect_ratio=decrease:flags=lanczos"
+            fi
+
+            common_in=( -y -hide_banner -loglevel error -nostats -nostdin -t 12 -i "$input" -map 0:v:0 -map '0:a:0?' )
+            c_common=( -c:v libx264 -preset fast -pix_fmt yuv420p -b:v 4300k -maxrate 5074k -bufsize 10148k -profile:v high -level:v 4.0 -tune film -c:a aac -ar 44100 -ac 2 -b:a 128k -brand isom -movflags +faststart -map_metadata -1 -threads 1 )
+
+            ffmpeg "${common_in[@]}" -vf "$cscale,setsar=1,fps=29.970,unsharp=5:5:0.45:3:3:0.0" "${c_common[@]}" "out/${name}__C_Sharp_HQ.mp4"
+            ffmpeg "${common_in[@]}" -vf "$cscale,setsar=1,fps=29.970,hqdn3d=0.35:0.35:1.5:1.5,unsharp=5:5:0.36:3:3:0.0,eq=contrast=1.015:saturation=1.01" "${c_common[@]}" "out/${name}__C_Plus_HQ.mp4"
+            ffmpeg "${common_in[@]}" -vf "$cscale,setsar=1,fps=29.970,hqdn3d=0.25:0.25:1.0:1.0,unsharp=5:5:0.28:3:3:0.0,eq=contrast=1.008:saturation=1.005" "${c_common[@]}" "out/${name}__C_Balance_HQ.mp4"
+
+            ffmpeg "${common_in[@]}" \
+              -vf "$pscale,setsar=1,fps=30000/1001" \
+              -c:v libx264 -preset fast -pix_fmt yuv420p \
+              -b:v 3200k -maxrate 3776k -bufsize 7552k \
+              -profile:v main -level:v 3.1 -tag:v avc1 \
+              -g 60 -keyint_min 30 -sc_threshold 0 \
+              -c:a aac -profile:a aac_low -ar 48000 -ac 2 -b:a 128k \
+              -movflags +faststart -metadata:s:v:0 rotate=0 -map_metadata -1 -threads 1 \
+              "out/${name}__Premium_HQ.mp4"
+          }
+
+          render_all testsrc/architecture.mp4 architecture-crowd
+          render_all testsrc/night-city.mp4 night-city-crowd
+          render_all testsrc/leaves-water.mp4 leaves-water-detail
+
+          {
+            echo 'Sources:'
+            echo 'architecture-crowd = Pexels video 10002493'
+            echo 'night-city-crowd = Pexels video 13658220'
+            echo 'leaves-water-detail = Pexels video 12221720'
+            echo
+            echo 'Each output is the same first 12 seconds of its source.'
+            echo 'C/C+/C Balance mirror current HQ Lab recipes; Premium mirrors current 720p mobile-safe Status HQ recipe.'
+          } > out/README.txt
+
+          for f in out/*.mp4; do
+            echo "--- $f"
+            ffprobe -v error -select_streams v:0 -show_entries stream=codec_name,profile,width,height,r_frame_rate,bit_rate -show_entries format=duration,size -of default=nw=1 "$f"
+          done
+
+      - name: Upload comparison files
+        uses: actions/upload-artifact@v4
+        with:
+          name: hq-lab-chat-comparison
+          path: out/
+          if-no-files-found: error
+          retention-days: 1
