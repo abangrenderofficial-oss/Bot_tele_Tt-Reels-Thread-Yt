@@ -52,9 +52,9 @@ function sourceHeaders(headers) {
   return out;
 }
 
-function safeExtension(item) {
-  const ext = String(item?.ext || 'mp4').toLowerCase().replace(/[^a-z0-9]/g, '');
-  return ext || 'mp4';
+function safeExtension(item, fallback = 'mp4') {
+  const ext = String(item?.ext || fallback).toLowerCase().replace(/[^a-z0-9]/g, '');
+  return ext || fallback;
 }
 
 async function fetchWithHeaderTimeout(url, options, timeoutMs) {
@@ -70,9 +70,9 @@ async function fetchWithHeaderTimeout(url, options, timeoutMs) {
   }
 }
 
-async function downloadRemoteVideo(item, filePath) {
+async function downloadRemoteFile(item, filePath, label = 'source') {
   if (!item?.url) {
-    const err = new Error('Status HQ source video URL is missing.');
+    const err = new Error(`Status HQ ${label} URL is missing.`);
     err.code = 'STATUS_SOURCE_MISSING';
     throw err;
   }
@@ -84,7 +84,7 @@ async function downloadRemoteVideo(item, filePath) {
   );
 
   if (!response.ok || !response.body) {
-    const err = new Error(`Status HQ source returned HTTP ${response.status}.`);
+    const err = new Error(`Status HQ ${label} returned HTTP ${response.status}.`);
     err.code = 'STATUS_SOURCE_FETCH_ERROR';
     throw err;
   }
@@ -92,7 +92,7 @@ async function downloadRemoteVideo(item, filePath) {
   await pipeline(Readable.fromWeb(response.body), createWriteStream(filePath));
   const fileStat = await stat(filePath);
   if (!fileStat.isFile() || !fileStat.size) {
-    const err = new Error('Status HQ source download is empty.');
+    const err = new Error(`Status HQ ${label} download is empty.`);
     err.code = 'STATUS_SOURCE_EMPTY';
     throw err;
   }
@@ -109,9 +109,7 @@ async function downloadWithYtDlp(url, outputBase, platform = 'generic') {
   const binary = ytdlpBinary();
   await chmod(binary, 0o755).catch(() => {});
   const outputTemplate = `${outputBase}.%(ext)s`;
-  const format = platform === 'youtube'
-    ? 'bestvideo[height<=1080]+bestaudio/best[height<=1080]'
-    : 'best[height<=1080]/best';
+  const format = 'bestvideo[height<=1080]+bestaudio/best[height<=1080]/best';
   const args = [
     ...ytdlpCommonArgs(),
     '--format', format,
@@ -176,6 +174,73 @@ async function probeLocalVideo(filePath) {
   };
 }
 
+async function mergeExternalAudio(videoPath, audioPath, outputPath) {
+  await rm(outputPath, { force: true }).catch(() => {});
+  const args = [
+    '-y', '-hide_banner', '-loglevel', 'error', '-nostats', '-nostdin',
+    '-i', videoPath,
+    '-i', audioPath,
+    '-map', '0:v:0', '-map', '1:a:0',
+    '-c:v', 'copy',
+    '-c:a', 'aac', '-profile:a', 'aac_low', '-ar', '48000', '-ac', '2', '-b:a', '128k',
+    '-shortest', '-map_metadata', '-1', '-f', 'matroska', outputPath,
+  ];
+  await execFileAsync(ffmpegPath, args, commandOptions(Number(process.env.STATUS_AUDIO_MUX_TIMEOUT_MS || 120000)));
+  const fileStat = await stat(outputPath);
+  if (!fileStat.isFile() || !fileStat.size) {
+    const err = new Error('Status HQ audio mux produced an empty file.');
+    err.code = 'STATUS_AUDIO_MUX_EMPTY';
+    throw err;
+  }
+  return outputPath;
+}
+
+async function recoverAudioSource({ inputPath, sourceUrl, platform, audio, base, allPaths }) {
+  let activePath = inputPath;
+  let probe = await probeLocalVideo(activePath);
+  if (probe.hasAudio || platform === 'telegram') return { inputPath: activePath, probe };
+
+  if (audio?.url) {
+    const audioPath = `${base}-audio.${safeExtension(audio, 'm4a')}`;
+    const muxedPath = `${base}-source-av.mkv`;
+    allPaths.push(audioPath, muxedPath);
+    try {
+      await downloadRemoteFile(audio, audioPath, 'audio');
+      await mergeExternalAudio(activePath, audioPath, muxedPath);
+      const muxedProbe = await probeLocalVideo(muxedPath);
+      if (muxedProbe.hasAudio) {
+        console.info('[status-hq] restored source audio using resolver audio track.');
+        await rm(activePath, { force: true }).catch(() => {});
+        activePath = muxedPath;
+        probe = muxedProbe;
+        return { inputPath: activePath, probe };
+      }
+    } catch (error) {
+      console.warn('[status-hq] resolver audio restore failed:', error?.code, error?.message);
+    }
+  }
+
+  if (sourceUrl) {
+    try {
+      const mergedPath = await downloadWithYtDlp(sourceUrl, `${base}-source-ytdlp-av`, platform || 'generic');
+      allPaths.push(mergedPath);
+      const mergedProbe = await probeLocalVideo(mergedPath);
+      if (mergedProbe.hasAudio) {
+        console.info('[status-hq] restored source audio using original URL + yt-dlp.');
+        await rm(activePath, { force: true }).catch(() => {});
+        activePath = mergedPath;
+        probe = mergedProbe;
+      } else {
+        console.warn('[status-hq] yt-dlp fallback also had no audio; keeping direct source.');
+      }
+    } catch (error) {
+      console.warn('[status-hq] yt-dlp audio restore failed; keeping direct source:', error?.code, error?.message);
+    }
+  }
+
+  return { inputPath: activePath, probe };
+}
+
 function configuredUploadLimitBytes() {
   const configured = Number(process.env.TELEGRAM_UPLOAD_MAX_MB || 0);
   const mb = Number.isFinite(configured) && configured > 0 ? configured : 50;
@@ -213,7 +278,7 @@ function dimensionsForTier(probe, tier) {
 
 function chooseEncodePlan(probe) {
   const duration = Math.max(1, Number(probe.duration || 0));
-  const audioKbps = 128;
+  const audioKbps = probe.hasAudio ? 128 : 0;
   const targetBytes = targetOutputBytes();
   const totalKbps = Math.max(300, Math.floor((targetBytes * 8 / duration / 1000) * 0.92));
   const videoKbps = Math.max(180, Math.min(3200, totalKbps - audioKbps - 60));
@@ -285,17 +350,20 @@ async function encodeSingleStatusFile(inputPath, outputPath, plan, bitrateScale 
   const videoKbps = Math.max(160, Math.floor(plan.videoKbps * bitrateScale));
   const maxRate = Math.max(videoKbps, Math.floor(videoKbps * 1.18));
   const buffer = Math.max(maxRate * 2, 1000);
+  const hasAudio = Boolean(sourceProbe?.hasAudio);
   const args = [
     '-y', '-hide_banner', '-loglevel', 'error', '-nostats', '-nostdin',
     '-filter_threads', String(plan.filterThreads ?? 1),
     '-i', inputPath,
-    '-map', '0:v:0', '-map', '0:a:0?',
+    '-map', '0:v:0', ...(hasAudio ? ['-map', '0:a:0?'] : []),
     '-vf', statusVideoFilter(plan),
     '-c:v', 'libx264', '-preset', plan.preset, '-pix_fmt', 'yuv420p',
     '-b:v', `${videoKbps}k`, '-maxrate', `${maxRate}k`, '-bufsize', `${buffer}k`,
     '-profile:v', 'main', '-level:v', '3.1', '-tag:v', 'avc1',
     '-g', '60', '-keyint_min', '30', '-sc_threshold', '0',
-    '-c:a', 'aac', '-profile:a', 'aac_low', '-ar', '48000', '-ac', '2', '-b:a', `${plan.audioKbps}k`,
+    ...(hasAudio
+      ? ['-c:a', 'aac', '-profile:a', 'aac_low', '-ar', '48000', '-ac', '2', '-b:a', `${plan.audioKbps || 128}k`]
+      : ['-an']),
     '-movflags', '+faststart', '-metadata:s:v:0', 'rotate=0',
     '-map_metadata', '-1', '-f', 'mp4', '-threads', String(plan.threads ?? 1), outputPath,
   ];
@@ -320,7 +388,7 @@ async function encodeSingleStatusFile(inputPath, outputPath, plan, bitrateScale 
   }
 
   const outputProbe = await probeLocalVideo(outputPath);
-  if (sourceProbe?.hasAudio && !outputProbe.hasAudio) {
+  if (hasAudio && !outputProbe.hasAudio) {
     const err = new Error('Status HQ output lost the source audio track.');
     err.code = 'STATUS_AUDIO_MISSING';
     throw err;
@@ -333,7 +401,7 @@ async function cleanup(paths) {
   await Promise.all([...new Set(paths)].map((filePath) => rm(filePath, { force: true }).catch(() => {})));
 }
 
-export async function prepareWhatsAppStatusHQ({ sourceUrl, platform, video }) {
+export async function prepareWhatsAppStatusHQ({ sourceUrl, platform, video, audio = null }) {
   const attemptId = randomUUID();
   const base = path.join(tmpdir(), `ar-status-${attemptId}`);
   const allPaths = [];
@@ -347,7 +415,7 @@ export async function prepareWhatsAppStatusHQ({ sourceUrl, platform, video }) {
       inputPath = `${base}-source.${safeExtension(video)}`;
       allPaths.push(inputPath);
       try {
-        await downloadRemoteVideo(video, inputPath);
+        await downloadRemoteFile(video, inputPath, 'video');
       } catch (directError) {
         if (!sourceUrl || platform === 'telegram') throw directError;
         console.warn('Status HQ direct source fetch failed; falling back to yt-dlp:', directError?.code, directError?.message);
@@ -357,7 +425,9 @@ export async function prepareWhatsAppStatusHQ({ sourceUrl, platform, video }) {
       }
     }
 
-    const probe = await probeLocalVideo(inputPath);
+    const recovered = await recoverAudioSource({ inputPath, sourceUrl, platform, audio, base, allPaths });
+    inputPath = recovered.inputPath;
+    const probe = recovered.probe;
     const plan = chooseEncodePlan(probe);
     let activePlan = plan;
     let resourceFallbackUsed = false;
