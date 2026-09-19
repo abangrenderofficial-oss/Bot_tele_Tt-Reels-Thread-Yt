@@ -235,51 +235,43 @@ function cappedSourceBox(probe, maxLong, maxShort) {
 
 function variantsFor(probe) {
   const base = currentPlan(probe);
-  const lightBox = cappedSourceBox(probe, 1920, 1080);
-  const box900 = cappedSourceBox(probe, 1600, 900);
-  const sourceFps = Math.max(12, Math.min(30, Number(probe.fps || 30)));
+  const cBox = cappedSourceBox(probe, 1920, 1080);
 
   return [
     {
-      id: 'A', name: 'Current HQ', label: 'A  CURRENT HQ',
+      id: 'C', slug: 'c', name: 'Sharp HQ', label: 'C  SHARP HQ',
       ...base,
-      sharpen: '', tune: '', gop: 0, scenecut: null,
-    },
-    {
-      id: 'B', name: 'Light HQ', label: 'B  LIGHT HQ',
-      ...base,
-      ...lightBox,
-      fps: sourceFps,
-      preset: 'veryfast',
-      scaleFlags: 'bicubic',
-      sharpen: '', tune: '', gop: 0, scenecut: null,
-    },
-    {
-      id: 'C', name: 'Sharp HQ', label: 'C  SHARP HQ',
-      ...base,
-      ...lightBox,
-      videoKbps: base.videoKbps,
+      ...cBox,
       preset: 'fast',
       scaleFlags: 'lanczos',
-      sharpen: 'unsharp=5:5:0.45:3:3:0.0', tune: 'film', gop: 0, scenecut: null,
+      filters: ['unsharp=5:5:0.45:3:3:0.0'],
+      tune: 'film',
     },
     {
-      id: 'D', name: '900p HQ', label: 'D  900P HQ',
+      id: 'C+', slug: 'cplus', name: 'C+ HQ', label: 'C+  HQ',
       ...base,
-      ...box900,
-      preset: 'veryfast',
-      scaleFlags: 'lanczos',
-      sharpen: '', tune: '', gop: 0, scenecut: null,
-    },
-    {
-      id: 'E', name: 'Motion HQ', label: 'E  MOTION HQ',
-      ...base,
-      ...lightBox,
-      fps: 30,
-      videoKbps: base.videoKbps,
+      ...cBox,
       preset: 'fast',
       scaleFlags: 'lanczos',
-      sharpen: '', tune: 'film', gop: 60, scenecut: 40,
+      filters: [
+        'hqdn3d=0.35:0.35:1.5:1.5',
+        'unsharp=5:5:0.36:3:3:0.0',
+        'eq=contrast=1.015:saturation=1.01',
+      ],
+      tune: 'film',
+    },
+    {
+      id: 'C BALANCE', slug: 'cbalance', name: 'C Balance HQ', label: 'C BALANCE HQ',
+      ...base,
+      ...cBox,
+      preset: 'fast',
+      scaleFlags: 'lanczos',
+      filters: [
+        'hqdn3d=0.25:0.25:1.0:1.0',
+        'unsharp=5:5:0.28:3:3:0.0',
+        'eq=contrast=1.008:saturation=1.005',
+      ],
+      tune: 'film',
     },
   ];
 }
@@ -337,8 +329,8 @@ async function videoFilter(variant, burnLabel) {
     `scale=w='max(2,trunc(iw*${fit}/2)*2)':h='max(2,trunc(ih*${fit}/2)*2)':flags=${variant.scaleFlags || 'lanczos'}`,
     'setsar=1',
     `fps=${Number(variant.fps || 30).toFixed(3)}`,
+    ...(Array.isArray(variant.filters) ? variant.filters : []),
   ];
-  if (variant.sharpen) filters.push(variant.sharpen);
   if (burnLabel) {
     const fontArg = await knownFontArg();
     filters.push(
@@ -363,11 +355,9 @@ async function encodeVariant(inputPath, outputPath, variant, burnLabel, hasAudio
     '-b:v', `${variant.videoKbps}k`, '-maxrate', `${maxRate}k`, '-bufsize', `${buffer}k`,
     '-profile:v', 'high', '-level:v', '4.0',
     ...(variant.tune ? ['-tune', variant.tune] : []),
-    ...(variant.gop ? ['-g', String(variant.gop), '-keyint_min', String(Math.max(1, Math.floor(variant.gop / 2)))] : []),
-    ...(variant.scenecut !== null && variant.scenecut !== undefined ? ['-sc_threshold', String(variant.scenecut)] : []),
     ...(hasAudio ? ['-c:a', 'aac', '-ar', '44100', '-ac', '2', '-b:a', `${variant.audioKbps || 128}k`] : ['-an']),
     '-brand', 'isom', '-movflags', '+faststart', '-metadata:s:v:0', 'rotate=0',
-    '-map_metadata', '-1', '-f', 'mp4', '-threads', '2', outputPath,
+    '-map_metadata', '-1', '-f', 'mp4', '-threads', '1', outputPath,
   ];
 
   const startedAt = performance.now();
@@ -422,7 +412,7 @@ export async function prepareHqLab({ sourceUrl = '', platform = 'generic', video
     const results = [];
 
     for (const variant of variants) {
-      const outputPath = `${base}-${variant.id.toLowerCase()}.mp4`;
+      const outputPath = `${base}-${variant.slug}.mp4`;
       paths.push(outputPath);
       try {
         const encoded = await encodeVariant(inputPath, outputPath, variant, burnLabel, source.hasAudio);
