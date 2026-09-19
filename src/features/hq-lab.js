@@ -4,6 +4,7 @@ import { isResetAdmin } from '../recovery.js';
 import { chooseBestVideo, resolveMedia } from '../bot/media-resolver.js';
 import { localMediaLane } from '../bot/job-lanes.js';
 import { prepareHqLab } from '../hq-lab.js';
+import { preparePremiumPlusHq } from '../hq-lab-premium-plus.js';
 
 const STATE_KEY = Symbol.for('abangrender.downloader.hq-lab.v1');
 const LAB_TTL_MS = 15 * 60_000;
@@ -118,15 +119,17 @@ export async function handleHqLabCommand(message) {
       '• link TikTok / Reels / Threads / X / YouTube',
       '• atau upload satu video dari Gallery',
       '',
-      'Bot akan hasilkan 3 versi dari source yang sama:',
-      'C Sharp HQ • C+ HQ • C Balance HQ',
+      'Bot akan hasilkan 4 versi dari source yang sama:',
+      'C Sharp HQ • C+ HQ • C Balance HQ • Premium + HQ',
       '',
       'C = resepi Sharp HQ asal.',
       'C+ = detail lebih bersih + micro-contrast.',
       'C Balance = sharpening lebih lembut/natural.',
+      'Premium + HQ = rupa Premium natural/cinematic + detail rescue ringan.',
       '',
+      'Premium + HQ guna target long-edge 1280, veryfast, 1 thread dan sharpening sangat ringan.',
       'Audio source akan dipulihkan sekali jika platform beri video dan audio berasingan.',
-      'Upload ketiga-tiga ke WhatsApp Status dan compare selepas WhatsApp compress.',
+      'Upload keempat-empat ke WhatsApp Status dan compare selepas WhatsApp compress.',
       'Taip /hqlab off untuk batal.',
     ].join('\n'),
   );
@@ -153,19 +156,40 @@ export async function processHqLabMessage(message, context = {}) {
   }
 
   state().delete(stateKey(message));
-  await sendMessage(chatId, '🧪 HQ Lab sedang buat 3 versi: C, C+ dan C Balance. Production user lain tak terjejas.').catch(() => {});
+  await sendMessage(chatId, '🧪 HQ Lab sedang buat 4 versi: C, C+, C Balance dan Premium + HQ. Production user lain tak terjejas.').catch(() => {});
   await sendChatAction(chatId, 'upload_video').catch(() => {});
 
   let prepared = null;
+  let premiumPlusPrepared = null;
   try {
     prepared = await localMediaLane(() => prepareHqLab(input));
-    const successes = prepared.results.filter((item) => item.ok);
-    const failures = prepared.results.filter((item) => !item.ok);
-    const total = prepared.results.length;
+
+    let premiumPlusResult = null;
+    try {
+      premiumPlusPrepared = await localMediaLane(() => preparePremiumPlusHq(input));
+      premiumPlusResult = premiumPlusPrepared.result;
+    } catch (error) {
+      console.error('[hq-lab/premium+] failed:', error?.code, error?.message);
+      premiumPlusResult = {
+        ok: false,
+        id: 'PREMIUM+',
+        name: 'Premium + HQ',
+        label: 'PREMIUM + HQ',
+        error: error?.message || 'encode_failed',
+      };
+    }
+
+    const combinedResults = [
+      ...prepared.results.map((item) => ({ ...item, burnLabel: prepared.burnLabel })),
+      { ...premiumPlusResult, burnLabel: premiumPlusPrepared?.result?.burnLabel || false },
+    ];
+    const successes = combinedResults.filter((item) => item.ok);
+    const failures = combinedResults.filter((item) => !item.ok);
+    const total = combinedResults.length;
 
     for (const result of successes) {
       await sendChatAction(chatId, 'upload_video').catch(() => {});
-      await sendVideoFileUpload(chatId, result.filePath, resultCaption(result, prepared.burnLabel));
+      await sendVideoFileUpload(chatId, result.filePath, resultCaption(result, result.burnLabel));
     }
 
     if (failures.length) {
@@ -176,7 +200,7 @@ export async function processHqLabMessage(message, context = {}) {
     } else {
       await sendMessage(
         chatId,
-        `✅ HQ Lab siap: C, C+ dan C Balance. Audio source: ${prepared.source?.hasAudio ? 'ada ✅' : 'tiada'}. Upload semua ke WhatsApp Status dan compare detail, naturalness dan motion selepas compression.`,
+        `✅ HQ Lab siap: C, C+, C Balance dan Premium + HQ. Audio source: ${prepared.source?.hasAudio ? 'ada ✅' : 'tiada'}. Upload semua ke WhatsApp Status dan compare detail, naturalness, skin/texture dan motion selepas compression.`,
       ).catch(() => {});
     }
   } catch (error) {
@@ -184,6 +208,7 @@ export async function processHqLabMessage(message, context = {}) {
     await sendMessage(chatId, '❌ HQ Lab tak dapat disiapkan untuk source ini. Production Status HQ tidak disentuh.').catch(() => {});
   } finally {
     if (prepared?.cleanup) await prepared.cleanup().catch(() => {});
+    if (premiumPlusPrepared?.cleanup) await premiumPlusPrepared.cleanup().catch(() => {});
   }
   return true;
 }
