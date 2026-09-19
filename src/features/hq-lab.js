@@ -114,10 +114,14 @@ export async function handleHqLabCommand(message) {
       '• link TikTok / Reels / Threads / X / YouTube',
       '• atau upload satu video dari Gallery',
       '',
-      'Bot akan hasilkan A–E dari source yang sama:',
-      'A Current HQ • B Light HQ • C Sharp HQ • D 900p HQ • E Motion HQ',
+      'Bot akan hasilkan 3 versi dari source yang sama:',
+      'C Sharp HQ • C+ HQ • C Balance HQ',
       '',
-      'Setiap result akan dilabel dan dihantar satu-satu untuk test WhatsApp Status.',
+      'C = resepi Sharp HQ asal.',
+      'C+ = detail lebih bersih + micro-contrast.',
+      'C Balance = sharpening lebih lembut/natural.',
+      '',
+      'Upload ketiga-tiga ke WhatsApp Status dan compare selepas WhatsApp compress.',
       'Taip /hqlab off untuk batal.',
     ].join('\n'),
   );
@@ -144,7 +148,7 @@ export async function processHqLabMessage(message, context = {}) {
   }
 
   state().delete(stateKey(message));
-  await sendMessage(chatId, '🧪 HQ Lab sedang buat 5 versi. Production user lain tak terjejas.').catch(() => {});
+  await sendMessage(chatId, '🧪 HQ Lab sedang buat 3 versi: C, C+ dan C Balance. Production user lain tak terjejas.').catch(() => {});
   await sendChatAction(chatId, 'upload_video').catch(() => {});
 
   let prepared = null;
@@ -152,6 +156,7 @@ export async function processHqLabMessage(message, context = {}) {
     prepared = await localMediaLane(() => prepareHqLab(input));
     const successes = prepared.results.filter((item) => item.ok);
     const failures = prepared.results.filter((item) => !item.ok);
+    const total = prepared.results.length;
 
     for (const result of successes) {
       await sendChatAction(chatId, 'upload_video').catch(() => {});
@@ -161,12 +166,12 @@ export async function processHqLabMessage(message, context = {}) {
     if (failures.length) {
       await sendMessage(
         chatId,
-        `⚠️ HQ Lab siap ${successes.length}/5. Gagal: ${failures.map((item) => `${item.id} ${item.name}`).join(', ')}.`,
+        `⚠️ HQ Lab siap ${successes.length}/${total}. Gagal: ${failures.map((item) => `${item.id} ${item.name}`).join(', ')}.`,
       ).catch(() => {});
     } else {
       await sendMessage(
         chatId,
-        '✅ HQ Lab siap A–E. Upload kelima-lima result ke WhatsApp Status dan compare sharpness selepas WhatsApp compress.',
+        '✅ HQ Lab siap: C, C+ dan C Balance. Upload semua ke WhatsApp Status dan compare detail, naturalness dan motion selepas compression.',
       ).catch(() => {});
     }
   } catch (error) {
