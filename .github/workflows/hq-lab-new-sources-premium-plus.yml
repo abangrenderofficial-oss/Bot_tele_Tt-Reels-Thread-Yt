@@ -1,0 +1,134 @@
+name: HQ Lab Fresh Sources Premium Plus
+
+on:
+  push:
+    branches:
+      - hq-lab-chat-test-20260919
+    paths:
+      - .github/workflows/hq-lab-new-sources-premium-plus.yml
+
+permissions:
+  contents: read
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        include:
+          - folder: 01_Architecture_Edinburgh_Crowd
+            id: '30786961'
+            label: 'Architecture (Edinburgh + Crowd)'
+            color_enhance: 'false'
+          - folder: 02_Night_City_Crowd
+            id: '29218502'
+            label: 'Night City + Crowd'
+            color_enhance: 'false'
+          - folder: 03_Leaves_Water
+            id: '14622819'
+            label: 'Leaves + Water'
+            color_enhance: 'false'
+          - folder: 04_Outdoor_City_China_Crowd
+            id: '36748028'
+            label: 'Outdoor City (China + Crowd)'
+            color_enhance: 'false'
+          - folder: 05_Nature_Beach
+            id: '10268678'
+            label: 'Nature Beach'
+            color_enhance: 'false'
+          - folder: 06_Nature_Kashmir
+            id: '35417044'
+            label: 'Nature (Kashmir)'
+            color_enhance: 'false'
+          - folder: 07_Sky_Cloud
+            id: '4496903'
+            label: 'Sky Cloud'
+            color_enhance: 'false'
+          - folder: 08_Close_Up_Face
+            id: '9246686'
+            label: 'Close Up Face'
+            color_enhance: 'false'
+          - folder: 09_Text_Word
+            id: '5283822'
+            label: 'Text / Word'
+            color_enhance: 'false'
+          - folder: 10_Finger_Typing
+            id: '5647327'
+            label: 'Finger Typing'
+            color_enhance: 'false'
+          - folder: 11_Color_Vibrant
+            id: '37315653'
+            label: 'Color / Vibrant'
+            color_enhance: 'false'
+          - folder: 12_Color_Enhance
+            id: '5658949'
+            label: 'Color Enhance'
+            color_enhance: 'true'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install FFmpeg and curl
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y ffmpeg curl
+
+      - name: Download fresh public source
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p source out/${{ matrix.folder }}
+          curl -L --fail --retry 3 -A 'Mozilla/5.0' \
+            'https://www.pexels.com/download/video/${{ matrix.id }}/' \
+            -o source/input.mp4
+          ffprobe -v error -select_streams v:0 \
+            -show_entries stream=width,height,r_frame_rate \
+            -of default=noprint_wrappers=1 source/input.mp4
+
+      - name: Render C C+ C Balance Premium and Premium Plus
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT='out/${{ matrix.folder }}'
+          LABEL='${{ matrix.label }}'
+          EXTRA=''
+          if [ '${{ matrix.color_enhance }}' = 'true' ]; then
+            EXTRA=',eq=contrast=1.025:saturation=1.14:brightness=0.004'
+          fi
+
+          # Preserve aspect ratio.  C-family works on a longer-edge target of 1920;
+          # Premium-family uses a lightweight longer-edge target of 1280.
+          CSCALE="scale='if(gte(iw,ih),1920,-2)':'if(gte(iw,ih),-2,1920)':flags=lanczos,scale=trunc(iw/2)*2:trunc(ih/2)*2"
+          PSCALE="scale='if(gte(iw,ih),1280,-2)':'if(gte(iw,ih),-2,1280)':flags=lanczos,scale=trunc(iw/2)*2:trunc(ih/2)*2"
+
+          COMMON=( -y -hide_banner -loglevel error -nostdin -ss 1 -t 8 -i source/input.mp4 -map 0:v:0 -map '0:a:0?' )
+          CENC=( -c:v libx264 -preset fast -pix_fmt yuv420p -b:v 4300k -maxrate 5074k -bufsize 10148k -profile:v high -level:v 4.0 -tune film -c:a aac -ar 44100 -ac 2 -b:a 128k -movflags +faststart -map_metadata -1 -threads 1 )
+          PENC=( -c:v libx264 -preset fast -pix_fmt yuv420p -b:v 3200k -maxrate 3776k -bufsize 7552k -profile:v main -level:v 3.1 -tag:v avc1 -g 60 -keyint_min 30 -sc_threshold 0 -c:a aac -profile:a aac_low -ar 48000 -ac 2 -b:a 128k -movflags +faststart -map_metadata -1 -threads 1 )
+          PPENC=( -c:v libx264 -preset veryfast -pix_fmt yuv420p -b:v 3350k -maxrate 3900k -bufsize 7800k -profile:v main -level:v 3.1 -tag:v avc1 -g 60 -keyint_min 30 -sc_threshold 0 -c:a aac -profile:a aac_low -ar 48000 -ac 2 -b:a 128k -movflags +faststart -map_metadata -1 -threads 1 )
+
+          ffmpeg "${COMMON[@]}" -vf "$CSCALE,setsar=1,fps=30000/1001,unsharp=5:5:0.45:3:3:0.0$EXTRA" "${CENC[@]}" "$OUT/01_C_Sharp_HQ.mp4"
+          ffmpeg "${COMMON[@]}" -vf "$CSCALE,setsar=1,fps=30000/1001,hqdn3d=0.35:0.35:1.5:1.5,unsharp=5:5:0.36:3:3:0.0,eq=contrast=1.015:saturation=1.01$EXTRA" "${CENC[@]}" "$OUT/02_C_Plus_HQ.mp4"
+          ffmpeg "${COMMON[@]}" -vf "$CSCALE,setsar=1,fps=30000/1001,hqdn3d=0.25:0.25:1.0:1.0,unsharp=5:5:0.28:3:3:0.0,eq=contrast=1.008:saturation=1.005$EXTRA" "${CENC[@]}" "$OUT/03_C_Balance_HQ.mp4"
+          ffmpeg "${COMMON[@]}" -vf "$PSCALE,setsar=1,fps=30000/1001$EXTRA" "${PENC[@]}" "$OUT/04_Premium_HQ.mp4"
+
+          # Premium+ = Premium look first, detail rescue second, still lightweight.
+          # Gentle spatial/temporal cleanup + very light sharpen + micro-contrast.
+          ffmpeg "${COMMON[@]}" -vf "$PSCALE,setsar=1,fps=30000/1001,hqdn3d=0.18:0.18:0.70:0.70,unsharp=5:5:0.18:3:3:0.0,eq=contrast=1.012:saturation=1.015$EXTRA" "${PPENC[@]}" "$OUT/05_Premium_Plus_HQ.mp4"
+
+          cat > "$OUT/README.txt" <<EOF
+          $LABEL
+          Fresh source Pexels ID: ${{ matrix.id }}
+          All five files use the same source and exact same 8-second segment.
+          Premium+ target: keep Premium natural/cinematic look while rescuing detail, with lightweight 720/1280-edge FFmpeg processing and 1 thread.
+          EOF
+
+      - name: Upload scene
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.folder }}
+          path: out/${{ matrix.folder }}/
+          if-no-files-found: error
+          retention-days: 1
