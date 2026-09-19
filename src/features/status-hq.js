@@ -22,7 +22,7 @@ function cancelled(fence) {
 
 async function prepareStatusFromSourceUrl(url, platform) {
   if (platform === 'youtube') {
-    return prepareWhatsAppStatusHQ({ sourceUrl: url, platform, video: null });
+    return prepareWhatsAppStatusHQ({ sourceUrl: url, platform, video: null, audio: null });
   }
 
   const media = await resolveMedia(platform, url);
@@ -32,7 +32,10 @@ async function prepareStatusFromSourceUrl(url, platform) {
     error.code = 'STATUS_SOURCE_NOT_FOUND';
     throw error;
   }
-  return prepareWhatsAppStatusHQ({ sourceUrl: url, platform, video: best });
+  const audio = Array.isArray(media?.audios)
+    ? media.audios.find((item) => item?.url) || null
+    : null;
+  return prepareWhatsAppStatusHQ({ sourceUrl: url, platform, video: best, audio });
 }
 
 export async function processStatusFromLink(chatId, url, platform, fence = null) {
@@ -149,29 +152,26 @@ export async function processStatusButton(callbackQuery, context = {}) {
       await sendDocumentFileUpload(chatId, prepared.filePath, 'Gambar ni dah ready untuk upload ke status ✅', 'status-hq.jpg');
     } else {
       prepared = await localMediaLane(async () => {
-        let telegramError = null;
+        let sourceError = null;
 
-        // The video already shown in Telegram is the safest audio-preserving source.
-        // Some social resolvers can expose a high-quality video-only stream, which
-        // made Premium HQ look correct but lose its soundtrack after encoding.
-        try {
-          const telegramVideo = await getTelegramFileSource(fileId);
-          return await prepareWhatsAppStatusHQ({ sourceUrl: '', platform: 'telegram', video: telegramVideo });
-        } catch (error) {
-          telegramError = error;
-          console.warn('[status-hq] Telegram source failed, trying original source URL:', error?.code, error?.message);
-        }
-
+        // For social links, rebuild from the original post first. The resolver can
+        // supply a separate audio track when the highest-quality video stream is silent.
         if (sourceUrl && sourcePlatform) {
           try {
             return await prepareStatusFromSourceUrl(sourceUrl, sourcePlatform);
-          } catch (sourceError) {
-            if (telegramError) throw telegramError;
-            throw sourceError;
+          } catch (error) {
+            sourceError = error;
+            console.warn('[status-hq] Original source failed, trying Telegram copy:', error?.code, error?.message);
           }
         }
 
-        throw telegramError || new Error('No usable video source for Status HQ.');
+        try {
+          const telegramVideo = await getTelegramFileSource(fileId);
+          return await prepareWhatsAppStatusHQ({ sourceUrl: '', platform: 'telegram', video: telegramVideo, audio: null });
+        } catch (telegramError) {
+          if (sourceError) throw sourceError;
+          throw telegramError;
+        }
       });
       if (cancelled(fence)) {
         await progress.remove();
