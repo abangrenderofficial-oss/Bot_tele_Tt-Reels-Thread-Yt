@@ -57,6 +57,7 @@ function resultCaption(result, burnLabel) {
     `🧪 ${result.id} — ${result.name}`,
     output.width && output.height ? `📐 ${output.width} × ${output.height}` : null,
     output.fps ? `🎞 ${formatFps(output.fps)} fps` : null,
+    output.hasAudio ? '🔊 Audio: ada' : '🔇 Audio: tiada pada source',
     `📊 Target video: ${result.videoKbps} kbps`,
     `📦 ${formatSize(result.size)}`,
     `⚡ Encode: ${(Number(result.elapsedMs || 0) / 1000).toFixed(1)}s`,
@@ -69,7 +70,7 @@ async function resolveLabInput(message) {
     || (String(message?.document?.mime_type || '').startsWith('video/') ? message.document.file_id : '');
   if (uploadedFileId) {
     const video = await getTelegramFileSource(uploadedFileId);
-    return { sourceUrl: '', platform: 'telegram', video };
+    return { sourceUrl: '', platform: 'telegram', video, audio: null };
   }
 
   const url = extractFirstUrl(message?.text || message?.caption || '');
@@ -80,7 +81,7 @@ async function resolveLabInput(message) {
     error.code = 'HQ_LAB_UNSUPPORTED_LINK';
     throw error;
   }
-  if (platform === 'youtube') return { sourceUrl: url, platform, video: null };
+  if (platform === 'youtube') return { sourceUrl: url, platform, video: null, audio: null };
 
   const media = await resolveMedia(platform, url);
   const video = chooseBestVideo(media?.videos || []);
@@ -89,7 +90,10 @@ async function resolveLabInput(message) {
     error.code = 'HQ_LAB_VIDEO_NOT_FOUND';
     throw error;
   }
-  return { sourceUrl: url, platform, video };
+  const audio = Array.isArray(media?.audios)
+    ? media.audios.find((item) => item?.url) || null
+    : null;
+  return { sourceUrl: url, platform, video, audio };
 }
 
 export async function handleHqLabCommand(message) {
@@ -121,6 +125,7 @@ export async function handleHqLabCommand(message) {
       'C+ = detail lebih bersih + micro-contrast.',
       'C Balance = sharpening lebih lembut/natural.',
       '',
+      'Audio source akan dipulihkan sekali jika platform beri video dan audio berasingan.',
       'Upload ketiga-tiga ke WhatsApp Status dan compare selepas WhatsApp compress.',
       'Taip /hqlab off untuk batal.',
     ].join('\n'),
@@ -171,7 +176,7 @@ export async function processHqLabMessage(message, context = {}) {
     } else {
       await sendMessage(
         chatId,
-        '✅ HQ Lab siap: C, C+ dan C Balance. Upload semua ke WhatsApp Status dan compare detail, naturalness dan motion selepas compression.',
+        `✅ HQ Lab siap: C, C+ dan C Balance. Audio source: ${prepared.source?.hasAudio ? 'ada ✅' : 'tiada'}. Upload semua ke WhatsApp Status dan compare detail, naturalness dan motion selepas compression.`,
       ).catch(() => {});
     }
   } catch (error) {
