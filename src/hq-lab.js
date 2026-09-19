@@ -53,9 +53,9 @@ function sourceHeaders(headers) {
   return out;
 }
 
-function safeExtension(item) {
-  const ext = String(item?.ext || 'mp4').toLowerCase().replace(/[^a-z0-9]/g, '');
-  return ext || 'mp4';
+function safeExtension(item, fallback = 'mp4') {
+  const ext = String(item?.ext || fallback).toLowerCase().replace(/[^a-z0-9]/g, '');
+  return ext || fallback;
 }
 
 async function fetchWithHeaderTimeout(url, options, timeoutMs) {
@@ -71,9 +71,9 @@ async function fetchWithHeaderTimeout(url, options, timeoutMs) {
   }
 }
 
-async function downloadRemoteVideo(item, filePath) {
+async function downloadRemoteFile(item, filePath, label = 'source') {
   if (!item?.url) {
-    const error = new Error('HQ Lab source URL is missing.');
+    const error = new Error(`HQ Lab ${label} URL is missing.`);
     error.code = 'HQ_LAB_SOURCE_MISSING';
     throw error;
   }
@@ -84,7 +84,7 @@ async function downloadRemoteVideo(item, filePath) {
     Number(process.env.HQ_LAB_SOURCE_HEADER_TIMEOUT_MS || 30000),
   );
   if (!response.ok || !response.body) {
-    const error = new Error(`HQ Lab source returned HTTP ${response.status}.`);
+    const error = new Error(`HQ Lab ${label} returned HTTP ${response.status}.`);
     error.code = 'HQ_LAB_SOURCE_FETCH_ERROR';
     throw error;
   }
@@ -92,7 +92,7 @@ async function downloadRemoteVideo(item, filePath) {
   await pipeline(Readable.fromWeb(response.body), createWriteStream(filePath));
   const info = await stat(filePath);
   if (!info.isFile() || !info.size) {
-    const error = new Error('HQ Lab source download is empty.');
+    const error = new Error(`HQ Lab ${label} download is empty.`);
     error.code = 'HQ_LAB_SOURCE_EMPTY';
     throw error;
   }
@@ -105,7 +105,7 @@ async function downloadWithYtDlp(url, outputBase) {
   const outputTemplate = `${outputBase}.%(ext)s`;
   const args = [
     ...ytdlpCommonArgs(),
-    '--format', 'bestvideo[height<=1080]+bestaudio/best[height<=1080]',
+    '--format', 'bestvideo[height<=1080]+bestaudio/best[height<=1080]/best',
     '--merge-output-format', 'mp4',
     '--ffmpeg-location', ffmpegPath,
     '--no-progress',
@@ -168,6 +168,69 @@ async function probeVideo(filePath) {
     fps: parseFps(videoLine),
     hasAudio: /Audio:/i.test(stderr),
   };
+}
+
+async function mergeExternalAudio(videoPath, audioPath, outputPath) {
+  await rm(outputPath, { force: true }).catch(() => {});
+  const args = [
+    '-y', '-hide_banner', '-loglevel', 'error', '-nostats', '-nostdin',
+    '-i', videoPath,
+    '-i', audioPath,
+    '-map', '0:v:0', '-map', '1:a:0',
+    '-c:v', 'copy',
+    '-c:a', 'aac', '-ar', '44100', '-ac', '2', '-b:a', '128k',
+    '-shortest', '-map_metadata', '-1', '-f', 'matroska', outputPath,
+  ];
+  await execFileAsync(ffmpegPath, args, commandOptions(Number(process.env.HQ_LAB_MUX_TIMEOUT_MS || 120000)));
+  const info = await stat(outputPath);
+  if (!info.isFile() || !info.size) throw new Error('HQ Lab audio mux produced an empty file.');
+  return outputPath;
+}
+
+async function recoverAudioSource({ inputPath, sourceUrl, platform, audio, base, paths }) {
+  let activePath = inputPath;
+  let source = await probeVideo(activePath);
+  if (source.hasAudio || platform === 'telegram') return { inputPath: activePath, source };
+
+  if (audio?.url) {
+    const audioPath = `${base}-audio.${safeExtension(audio, 'm4a')}`;
+    const muxedPath = `${base}-source-av.mkv`;
+    paths.push(audioPath, muxedPath);
+    try {
+      await downloadRemoteFile(audio, audioPath, 'audio');
+      await mergeExternalAudio(activePath, audioPath, muxedPath);
+      const muxedProbe = await probeVideo(muxedPath);
+      if (muxedProbe.hasAudio) {
+        console.info('[hq-lab] restored audio using resolver audio track.');
+        await rm(activePath, { force: true }).catch(() => {});
+        activePath = muxedPath;
+        source = muxedProbe;
+        return { inputPath: activePath, source };
+      }
+    } catch (error) {
+      console.warn('[hq-lab] resolver audio restore failed:', error?.code, error?.message);
+    }
+  }
+
+  if (sourceUrl) {
+    try {
+      const mergedPath = await downloadWithYtDlp(sourceUrl, `${base}-source-ytdlp-av`);
+      paths.push(mergedPath);
+      const mergedProbe = await probeVideo(mergedPath);
+      if (mergedProbe.hasAudio) {
+        console.info('[hq-lab] restored audio using original URL + yt-dlp.');
+        await rm(activePath, { force: true }).catch(() => {});
+        activePath = mergedPath;
+        source = mergedProbe;
+      } else {
+        console.warn('[hq-lab] yt-dlp fallback also had no audio; keeping direct source.');
+      }
+    } catch (error) {
+      console.warn('[hq-lab] yt-dlp audio restore failed; keeping direct source:', error?.code, error?.message);
+    }
+  }
+
+  return { inputPath: activePath, source };
 }
 
 function uploadLimitBytes() {
@@ -366,6 +429,11 @@ async function encodeVariant(inputPath, outputPath, variant, burnLabel, hasAudio
   const info = await stat(outputPath);
   if (!info.isFile() || !info.size) throw new Error(`HQ Lab ${variant.id} produced an empty output.`);
   const outputProbe = await probeVideo(outputPath).catch(() => null);
+  if (hasAudio && outputProbe && !outputProbe.hasAudio) {
+    const error = new Error(`HQ Lab ${variant.id} lost the source audio track.`);
+    error.code = 'HQ_LAB_AUDIO_MISSING';
+    throw error;
+  }
   return {
     ...variant,
     filePath: outputPath,
@@ -375,7 +443,7 @@ async function encodeVariant(inputPath, outputPath, variant, burnLabel, hasAudio
   };
 }
 
-export async function prepareHqLab({ sourceUrl = '', platform = 'generic', video = null }) {
+export async function prepareHqLab({ sourceUrl = '', platform = 'generic', video = null, audio = null }) {
   const attemptId = randomUUID();
   const base = path.join(tmpdir(), `ar-hqlab-${attemptId}`);
   const paths = [];
@@ -389,7 +457,7 @@ export async function prepareHqLab({ sourceUrl = '', platform = 'generic', video
       inputPath = `${base}-source.${safeExtension(video)}`;
       paths.push(inputPath);
       try {
-        await downloadRemoteVideo(video, inputPath);
+        await downloadRemoteFile(video, inputPath, 'video');
       } catch (directError) {
         if (!sourceUrl) throw directError;
         console.warn('[hq-lab] direct source failed; falling back to yt-dlp:', directError?.code, directError?.message);
@@ -406,7 +474,9 @@ export async function prepareHqLab({ sourceUrl = '', platform = 'generic', video
       throw error;
     }
 
-    const source = await probeVideo(inputPath);
+    const recovered = await recoverAudioSource({ inputPath, sourceUrl, platform, audio, base, paths });
+    inputPath = recovered.inputPath;
+    const source = recovered.source;
     const burnLabel = await canBurnLabel();
     const variants = variantsFor(source);
     const results = [];
