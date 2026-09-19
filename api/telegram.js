@@ -21,6 +21,7 @@ import { processStatusButton, processStatusFromLink } from '../src/features/stat
 import { processLiveWallpaperButton } from '../src/features/live-wallpaper.js';
 import { processUploadedPhoto, processUploadedVideo } from '../src/features/uploaded-media.js';
 import { processStandardDownload } from '../src/features/downloader.js';
+import { handleHqLabCommand, processHqLabMessage } from '../src/features/hq-lab.js';
 import { processTikTokSlideshowChoice, sendTikTokSlideshowChoice } from '../src/features/tiktok-slideshow.js';
 
 function json(res, status, body) {
@@ -79,6 +80,9 @@ async function processMessage(message, context) {
     await sendMessage(chatId, START_TEXT);
     return;
   }
+
+  if (await handleHqLabCommand(message, context)) return;
+  if (await processHqLabMessage(message, context)) return;
 
   if (Array.isArray(message?.photo) && message.photo.length) {
     await processUploadedPhoto(message, context);
