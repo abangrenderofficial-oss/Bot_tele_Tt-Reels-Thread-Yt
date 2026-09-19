@@ -1,0 +1,121 @@
+name: HQ Premium Plus Comparison
+on:
+  push:
+    branches: [hq-premium-plus-test-20260920]
+    paths: [.github/workflows/hq-premium-plus-comparison.yml]
+permissions:
+  contents: read
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        include:
+          - id: 01_Edinburgh_Crowd
+            pexels: '30615524'
+            enhance: 'no'
+          - id: 02_Night_City_Crowd
+            pexels: '13658220'
+            enhance: 'no'
+          - id: 03_Leaves_Water
+            pexels: '12221720'
+            enhance: 'no'
+          - id: 04_China_City_Crowd
+            pexels: '31201746'
+            enhance: 'no'
+          - id: 05_Nature_Beach
+            pexels: '35432925'
+            enhance: 'no'
+          - id: 07_Sky_Cloud
+            pexels: '33029589'
+            enhance: 'no'
+          - id: 08_Close_Up_Face
+            pexels: '5978692'
+            enhance: 'no'
+          - id: 09_Text_Word
+            pexels: 'text'
+            enhance: 'no'
+          - id: 10_Finger_Typing
+            pexels: '5684420'
+            enhance: 'no'
+          - id: 11_Color_Vibrant
+            pexels: '28537370'
+            enhance: 'no'
+          - id: 12_Color_Enhance
+            pexels: '28537370'
+            enhance: 'yes'
+    steps:
+      - name: Install FFmpeg
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
+      - name: Render and verify
+        env:
+          SCENE: ${{ matrix.id }}
+          PEXELS: ${{ matrix.pexels }}
+          ENHANCE: ${{ matrix.enhance }}
+        run: |
+          cat > render.py <<'PY'
+          import os,sys,json,subprocess,time,pathlib,hashlib
+          scene,pexels,enhance=sys.argv[1:4]
+          out=pathlib.Path('out')/scene
+          out.mkdir(parents=True,exist_ok=True)
+          def run(args): subprocess.run(args,check=True)
+          def probe(p): return json.loads(subprocess.check_output(['ffprobe','-v','error','-show_streams','-show_format','-of','json',str(p)]))
+          if pexels=='text':
+              font='/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf'
+              vf=[]
+              for i,(text,size) in enumerate([('ABANG RENDER - TEXT DETAIL TEST',54),('Natural texture. Clear words. Smooth motion.',40),('Aa Bb Cc 0123456789 - RM 1,234.56',32),('Small lettering: Architecture | Kashmir | Malaysia',24),('Fine text: abcdefghijklmnopqrstuvwxyz 0123456789',18)]):
+                  vf.append(f"drawtext=fontfile={font}:text='{text}':fontsize={size}:fontcolor=white:x=80+20*sin(t):y={100+i*140}")
+              run(['ffmpeg','-y','-v','error','-f','lavfi','-i','color=c=0x182332:s=1920x1080:r=30000/1001:d=8','-vf',','.join(vf),'-c:v','ffv1','source.mkv'])
+              inp='source.mkv'
+              source_url='Generated original moving text test card (lossless master)'
+          else:
+              source_url=f'https://www.pexels.com/download/video/{pexels}/'
+              run(['curl','-L','--fail','--retry','2','--connect-timeout','20','--max-time','240','-A','Mozilla/5.0',source_url,'-o','source.mp4'])
+              inp='source.mp4'
+          meta=probe(inp)
+          v=next(x for x in meta['streams'] if x['codec_type']=='video')
+          has_audio=any(x['codec_type']=='audio' for x in meta['streams'])
+          assert float(meta['format']['duration'])>=8, 'Source shorter than 8 seconds'
+          cw,ch=(1920,1080) if v['width']>=v['height'] else (1080,1920)
+          pw,ph=(1280,720) if v['width']>=v['height'] else (720,1280)
+          def scale(w,h):return f'scale={w}:{h}:force_original_aspect_ratio=decrease:force_divisible_by=2:flags=lanczos,setsar=1'
+          filters=[
+          scale(cw,ch)+',fps=29.970,unsharp=5:5:0.45:3:3:0.0',
+          scale(cw,ch)+',fps=29.970,hqdn3d=0.35:0.35:1.5:1.5,unsharp=5:5:0.36:3:3:0.0,eq=contrast=1.015:saturation=1.01',
+          scale(cw,ch)+',fps=29.970,hqdn3d=0.25:0.25:1.0:1.0,unsharp=5:5:0.28:3:3:0.0,eq=contrast=1.008:saturation=1.005',
+          scale(pw,ph)+',fps=30000/1001',
+          'fps=30000/1001,'+scale(pw,ph)+',unsharp=3:3:0.22:3:3:0.0']
+          names=['01_C_Sharp_HQ','02_C_Plus_HQ','03_C_Balance_HQ','04_Premium_HQ','05_Premium_Plus_HQ']
+          records=[]
+          for i,(name,vf) in enumerate(zip(names,filters)):
+              if enhance=='yes':vf+=',eq=contrast=1.025:saturation=1.10:gamma=1.01'
+              dst=out/(scene+'__'+name+'.mp4')
+              c=i<3
+              bitrate=4300 if c else (3200 if i==3 else 3800)
+              maxrate=5074 if c else (3776 if i==3 else 4484)
+              args=['ffmpeg','-y','-hide_banner','-loglevel','error','-nostdin','-filter_threads','1','-threads','1','-t','8','-i',inp,'-map','0:v:0','-map','0:a:0?','-vf',vf,'-c:v','libx264','-preset','veryfast' if i==4 else 'fast','-pix_fmt','yuv420p','-b:v',f'{bitrate}k','-maxrate',f'{maxrate}k','-bufsize',f'{maxrate*2}k','-profile:v','high' if c else 'main','-level:v','4.0' if c else '3.1']
+              args+=['-tune','film'] if c else ['-tag:v','avc1','-g','60','-keyint_min','30','-sc_threshold','0']
+              args+=['-c:a','aac','-ar','44100' if c else '48000','-ac','2','-b:a','128k','-movflags','+faststart','-map_metadata','-1','-metadata:s:v:0','rotate=0','-threads','1',str(dst)]
+              timing=out/(name+'_timing.txt')
+              run(['/usr/bin/time','-f','%e %U %S %M','-o',str(timing)]+args)
+              info=probe(dst)
+              assert any(x['codec_type']=='audio' for x in info['streams'])==has_audio
+              run(['ffmpeg','-v','error','-xerror','-threads','1','-i',str(dst),'-f','null','-'])
+              run(['ffmpeg','-v','error','-y','-ss','3','-i',str(dst),'-frames:v','1','-vf','scale=480:-2',str(out/(name+'.jpg'))])
+              records.append(dict(file=dst.name,command=args,timing_seconds_user_system_peak_rss_kb=timing.read_text().strip(),sha256=hashlib.sha256(dst.read_bytes()).hexdigest(),probe=info))
+              print(scene,name,timing.read_text().strip(),flush=True)
+          run(['ffmpeg','-v','error','-y','-i',inp,'-t','8','-map','0:v:0','-map','0:a:0?','-c','copy',str(out/('SOURCE_'+scene+('.mkv' if pexels=='text' else '.mp4')))])
+          (out/'manifest.json').write_text(json.dumps(dict(scene=scene,source=source_url,source_probe=meta,enhance=enhance,premium_plus='Experimental v1: 720p lanczos, luma-only 3x3 unsharp 0.22, veryfast, 3800 kbps. No AI or semantic skin protection.',outputs=records),indent=2))
+          
+          PY
+          python3 render.py "$SCENE" "$PEXELS" "$ENHANCE"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.id }}
+          path: out/
+          compression-level: 0
+          retention-days: 7
+          if-no-files-found: error
