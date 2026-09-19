@@ -34,10 +34,14 @@ async function startProgress(chatId, textBuilder) {
     return editChain;
   };
 
+  // Telegram can throttle rapid message edits. The old 1.2s cadence commonly
+  // froze visually around 40% even while FFmpeg was still working. Keep the
+  // animation smooth but sparse enough to avoid edit-rate throttling.
   const timer = setInterval(() => {
     if (stopped || percent >= 99) return;
-    queueEdit(Math.min(99, percent + (percent < 35 ? 2 : 1)));
-  }, 1200);
+    const step = percent < 35 ? 4 : percent < 75 ? 2 : 1;
+    queueEdit(Math.min(99, percent + step));
+  }, 5000);
   timer.unref?.();
 
   return {
