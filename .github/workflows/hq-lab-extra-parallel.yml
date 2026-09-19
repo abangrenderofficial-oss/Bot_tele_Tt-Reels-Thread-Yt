@@ -1,0 +1,78 @@
+name: HQ Lab Extra Parallel
+
+on:
+  push:
+    branches:
+      - hq-lab-chat-test-20260919
+    paths:
+      - .github/workflows/hq-lab-extra-parallel.yml
+
+permissions:
+  contents: read
+
+jobs:
+  render:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - id: 04_Outdoor_City
+            pexels: 31201746
+          - id: 05_Nature_Beach
+            pexels: 35432925
+          - id: 06_Sky_Clouds
+            pexels: 33029589
+          - id: 07_Face_Skin_Tone
+            pexels: 5978692
+          - id: 08_Text_UI_Typing
+            pexels: 5684420
+          - id: 09_Color_Vibrant
+            pexels: 28537370
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install FFmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg curl
+
+      - name: Download source
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -L --fail --retry 3 -A 'Mozilla/5.0' "https://www.pexels.com/download/video/${{ matrix.pexels }}/" -o source.mp4
+          mkdir -p out
+
+      - name: Render four HQ variants
+        shell: bash
+        run: |
+          set -euo pipefail
+          width=$(ffprobe -v error -select_streams v:0 -show_entries stream=width -of csv=p=0 source.mp4)
+          height=$(ffprobe -v error -select_streams v:0 -show_entries stream=height -of csv=p=0 source.mp4)
+          if [ "$width" -ge "$height" ]; then
+            cscale="scale=1920:1080:force_original_aspect_ratio=decrease:flags=lanczos,scale=trunc(iw/2)*2:trunc(ih/2)*2"
+            pscale="scale=1280:720:force_original_aspect_ratio=decrease:flags=lanczos,scale=trunc(iw/2)*2:trunc(ih/2)*2"
+          else
+            cscale="scale=1080:1920:force_original_aspect_ratio=decrease:flags=lanczos,scale=trunc(iw/2)*2:trunc(ih/2)*2"
+            pscale="scale=720:1280:force_original_aspect_ratio=decrease:flags=lanczos,scale=trunc(iw/2)*2:trunc(ih/2)*2"
+          fi
+
+          common=( -y -hide_banner -loglevel error -nostats -nostdin -t 8 -i source.mp4 -map 0:v:0 -map '0:a:0?' )
+          cenc=( -c:v libx264 -preset fast -pix_fmt yuv420p -b:v 4300k -maxrate 5074k -bufsize 10148k -profile:v high -level:v 4.0 -tune film -c:a aac -ar 44100 -ac 2 -b:a 128k -brand isom -movflags +faststart -map_metadata -1 -threads 1 )
+
+          ffmpeg "${common[@]}" -vf "$cscale,setsar=1,fps=29.970,unsharp=5:5:0.45:3:3:0.0" "${cenc[@]}" out/01_C_Sharp_HQ.mp4
+          ffmpeg "${common[@]}" -vf "$cscale,setsar=1,fps=29.970,hqdn3d=0.35:0.35:1.5:1.5,unsharp=5:5:0.36:3:3:0.0,eq=contrast=1.015:saturation=1.01" "${cenc[@]}" out/02_C_Plus_HQ.mp4
+          ffmpeg "${common[@]}" -vf "$cscale,setsar=1,fps=29.970,hqdn3d=0.25:0.25:1.0:1.0,unsharp=5:5:0.28:3:3:0.0,eq=contrast=1.008:saturation=1.005" "${cenc[@]}" out/03_C_Balance_HQ.mp4
+          ffmpeg "${common[@]}" -vf "$pscale,setsar=1,fps=30000/1001" -c:v libx264 -preset fast -pix_fmt yuv420p -b:v 3200k -maxrate 3776k -bufsize 7552k -profile:v main -level:v 3.1 -tag:v avc1 -g 60 -keyint_min 30 -sc_threshold 0 -c:a aac -profile:a aac_low -ar 48000 -ac 2 -b:a 128k -movflags +faststart -metadata:s:v:0 rotate=0 -map_metadata -1 -threads 1 out/04_Premium_HQ.mp4
+
+          printf '%s\n' "${{ matrix.id }} - Pexels ${{ matrix.pexels }} - same first 8 seconds for all variants" > out/README.txt
+
+      - name: Upload scene
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.id }}
+          path: out/
+          if-no-files-found: error
+          retention-days: 1
