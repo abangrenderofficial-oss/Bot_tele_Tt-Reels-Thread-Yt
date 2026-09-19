@@ -1,0 +1,28 @@
+name: HQ Source Discovery
+on:
+  push:
+    branches: [hq-premium-plus-test-20260920]
+    paths: [.github/workflows/hq-source-discovery.yml]
+permissions:
+  contents: read
+jobs:
+  discover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Find public source pages
+        run: |
+          python3 - <<'PY'
+          import urllib.request,re,html,json
+          for term in ['kashmir','china crowd','book text']:
+            url='https://www.pexels.com/search/videos/'+urllib.parse.quote(term)+'/'
+            try:
+              s=urllib.request.urlopen(urllib.request.Request(url,headers={'User-Agent':'Mozilla/5.0'}),timeout=40).read().decode()
+              links=list(dict.fromkeys(re.findall(r'(?:https://www.pexels.com)?/video/[a-zA-Z0-9-]+-[0-9]+/',html.unescape(s))))
+              print(term,json.dumps(links[:30]),flush=True)
+            except Exception as e: print(term,str(e),flush=True)
+          PY
+      - name: Check clip download
+        run: |
+          curl -L --fail --max-time 120 --retry 1 -A 'Mozilla/5.0' https://www.pexels.com/download/video/30615524/ -o edinburgh.mp4
+          ls -lh edinburgh.mp4
