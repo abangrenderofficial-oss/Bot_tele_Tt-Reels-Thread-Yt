@@ -233,8 +233,8 @@ function chooseEncodePlan(probe) {
     fps: '30000/1001',
     preset: longForm ? 'superfast' : (videoKbps >= 1800 ? 'fast' : 'veryfast'),
     scaleFlags: longForm ? 'bicubic' : 'lanczos',
-    threads: 1,
-    filterThreads: 1,
+    threads: Math.max(1, Math.min(2, Number(process.env.STATUS_FFMPEG_THREADS || 1))),
+    filterThreads: Math.max(1, Math.min(2, Number(process.env.STATUS_FILTER_THREADS || 1))),
   };
 }
 
