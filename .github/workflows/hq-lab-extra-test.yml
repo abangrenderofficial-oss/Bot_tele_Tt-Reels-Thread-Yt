@@ -47,11 +47,11 @@ jobs:
             height=$(ffprobe -v error -select_streams v:0 -show_entries stream=height -of csv=p=0 "$input")
 
             if [ "$width" -ge "$height" ]; then
-              cscale="scale=1920:1080:force_original_aspect_ratio=decrease:flags=lanczos"
-              pscale="scale=1280:720:force_original_aspect_ratio=decrease:flags=lanczos"
+              cscale="scale=1920:1080:force_original_aspect_ratio=decrease:flags=lanczos,scale=trunc(iw/2)*2:trunc(ih/2)*2"
+              pscale="scale=1280:720:force_original_aspect_ratio=decrease:flags=lanczos,scale=trunc(iw/2)*2:trunc(ih/2)*2"
             else
-              cscale="scale=1080:1920:force_original_aspect_ratio=decrease:flags=lanczos"
-              pscale="scale=720:1280:force_original_aspect_ratio=decrease:flags=lanczos"
+              cscale="scale=1080:1920:force_original_aspect_ratio=decrease:flags=lanczos,scale=trunc(iw/2)*2:trunc(ih/2)*2"
+              pscale="scale=720:1280:force_original_aspect_ratio=decrease:flags=lanczos,scale=trunc(iw/2)*2:trunc(ih/2)*2"
             fi
 
             common_in=( -y -hide_banner -loglevel error -nostats -nostdin -t 12 -i "$input" -map 0:v:0 -map '0:a:0?' )
