@@ -1,0 +1,29 @@
+name: HQ Bridge Original Download
+
+on:
+  push:
+    branches:
+      - hq-lab-chat-test-20260919
+
+jobs:
+  download:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install yt-dlp and ffmpeg
+        run: |
+          python -m pip install -U yt-dlp
+          sudo apt-get update -y
+          sudo apt-get install -y ffmpeg
+      - name: Download TikTok original
+        run: |
+          mkdir -p out
+          yt-dlp --no-playlist --merge-output-format mp4 -f 'bv*+ba/b' -o 'out/original.%(ext)s' 'https://vt.tiktok.com/ZSqt88bX7'
+          f=$(find out -maxdepth 1 -type f | head -n 1)
+          ffmpeg -y -i "$f" -c copy -movflags +faststart out/bridge_original.mp4 || cp "$f" out/bridge_original.mp4
+          ffprobe -v error -show_entries format=duration,size,bit_rate -show_entries stream=index,codec_type,codec_name,width,height,avg_frame_rate,bit_rate -of default=nw=1 out/bridge_original.mp4
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bridge-original
+          path: out/bridge_original.mp4
+          retention-days: 1
