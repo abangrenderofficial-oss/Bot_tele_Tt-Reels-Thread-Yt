@@ -162,12 +162,18 @@ async function probeLocalVideo(filePath) {
 
   const duration = parseClockDuration(stderr.match(/Duration:\s*([^,]+)/i)?.[1] || '');
   const dimensions = stderr.match(/Video:[^\n]*?\b(\d{2,5})x(\d{2,5})\b/i);
+  const hasAudio = /Audio:/i.test(stderr);
   if (!duration) {
     const err = new Error('Status HQ could not determine source duration.');
     err.code = 'STATUS_PROBE_FAILED';
     throw err;
   }
-  return { duration, width: dimensions ? Number(dimensions[1]) : null, height: dimensions ? Number(dimensions[2]) : null };
+  return {
+    duration,
+    width: dimensions ? Number(dimensions[1]) : null,
+    height: dimensions ? Number(dimensions[2]) : null,
+    hasAudio,
+  };
 }
 
 function configuredUploadLimitBytes() {
@@ -210,11 +216,10 @@ function chooseEncodePlan(probe) {
   const audioKbps = 128;
   const targetBytes = targetOutputBytes();
   const totalKbps = Math.max(300, Math.floor((targetBytes * 8 / duration / 1000) * 0.92));
-  const videoKbps = Math.max(180, Math.min(4300, totalKbps - audioKbps - 60));
+  const videoKbps = Math.max(180, Math.min(3200, totalKbps - audioKbps - 60));
 
   let tier;
-  if (videoKbps >= 2400) tier = 1080;
-  else if (videoKbps >= 1050) tier = 720;
+  if (videoKbps >= 1050) tier = 720;
   else if (videoKbps >= 650) tier = 540;
   else tier = 360;
 
@@ -264,8 +269,8 @@ function isResourceFailure(error) {
 }
 
 function statusVideoFilter(plan) {
-  const maxWidth = Math.max(2, Math.floor(Number(plan.maxWidth || 1080) / 2) * 2);
-  const maxHeight = Math.max(2, Math.floor(Number(plan.maxHeight || 1920) / 2) * 2);
+  const maxWidth = Math.max(2, Math.floor(Number(plan.maxWidth || 720) / 2) * 2);
+  const maxHeight = Math.max(2, Math.floor(Number(plan.maxHeight || 1280) / 2) * 2);
   const sar = 'if(gt(sar,0),sar,1)';
   const fit = `min(1,min(${maxWidth}/(iw*${sar}),${maxHeight}/ih))`;
   return [
@@ -275,7 +280,7 @@ function statusVideoFilter(plan) {
   ].join(',');
 }
 
-async function encodeSingleStatusFile(inputPath, outputPath, plan, bitrateScale = 1) {
+async function encodeSingleStatusFile(inputPath, outputPath, plan, bitrateScale = 1, sourceProbe = null) {
   await rm(outputPath, { force: true }).catch(() => {});
   const videoKbps = Math.max(160, Math.floor(plan.videoKbps * bitrateScale));
   const maxRate = Math.max(videoKbps, Math.floor(videoKbps * 1.18));
@@ -288,9 +293,10 @@ async function encodeSingleStatusFile(inputPath, outputPath, plan, bitrateScale 
     '-vf', statusVideoFilter(plan),
     '-c:v', 'libx264', '-preset', plan.preset, '-pix_fmt', 'yuv420p',
     '-b:v', `${videoKbps}k`, '-maxrate', `${maxRate}k`, '-bufsize', `${buffer}k`,
-    '-profile:v', 'high', '-level:v', '4.0',
-    '-c:a', 'aac', '-ar', '44100', '-ac', '2', '-b:a', `${plan.audioKbps}k`,
-    '-brand', 'isom', '-movflags', '+faststart', '-metadata:s:v:0', 'rotate=0',
+    '-profile:v', 'main', '-level:v', '3.1', '-tag:v', 'avc1',
+    '-g', '60', '-keyint_min', '30', '-sc_threshold', '0',
+    '-c:a', 'aac', '-profile:a', 'aac_low', '-ar', '48000', '-ac', '2', '-b:a', `${plan.audioKbps}k`,
+    '-movflags', '+faststart', '-metadata:s:v:0', 'rotate=0',
     '-map_metadata', '-1', '-f', 'mp4', '-threads', String(plan.threads ?? 1), outputPath,
   ];
 
@@ -312,7 +318,15 @@ async function encodeSingleStatusFile(inputPath, outputPath, plan, bitrateScale 
     err.code = 'STATUS_OUTPUT_MISSING';
     throw err;
   }
-  return { size: fileStat.size, videoKbps };
+
+  const outputProbe = await probeLocalVideo(outputPath);
+  if (sourceProbe?.hasAudio && !outputProbe.hasAudio) {
+    const err = new Error('Status HQ output lost the source audio track.');
+    err.code = 'STATUS_AUDIO_MISSING';
+    throw err;
+  }
+
+  return { size: fileStat.size, videoKbps, hasAudio: outputProbe.hasAudio };
 }
 
 async function cleanup(paths) {
@@ -357,7 +371,7 @@ export async function prepareWhatsAppStatusHQ({ sourceUrl, platform, video }) {
       outputPath = `${base}-status-a${index + 1}.mp4`;
       allPaths.push(outputPath);
       try {
-        encoded = await encodeSingleStatusFile(inputPath, outputPath, activePlan, attempts[index]);
+        encoded = await encodeSingleStatusFile(inputPath, outputPath, activePlan, attempts[index], probe);
       } catch (error) {
         if (!resourceFallbackUsed && isResourceFailure(error)) {
           resourceFallbackUsed = true;
@@ -387,9 +401,10 @@ export async function prepareWhatsAppStatusHQ({ sourceUrl, platform, video }) {
       profile: {
         mode: 'single', tier: activePlan.tier, maxWidth: activePlan.maxWidth, maxHeight: activePlan.maxHeight,
         videoKbps: encoded.videoKbps, audioKbps: activePlan.audioKbps,
+        hasAudio: encoded.hasAudio,
         resourceFallbackUsed,
       },
-      quality: `Status HQ • single file • ${activePlan.tier}p class • H.264/AAC • ratio asal${resourceFallbackUsed ? ' • safe fallback' : ''}`,
+      quality: `Status HQ • single file • ${activePlan.tier}p class • H.264 Main/AAC-LC • mobile-safe${resourceFallbackUsed ? ' • safe fallback' : ''}`,
       attempt: usedAttempt,
       cleanup: async () => cleanup(allPaths),
     };
