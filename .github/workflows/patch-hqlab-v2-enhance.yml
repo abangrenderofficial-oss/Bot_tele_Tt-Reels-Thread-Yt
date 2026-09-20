@@ -1,0 +1,63 @@
+name: Patch HQ Lab V2 Enhance
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/patch-hqlab-v2-enhance.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Make V2 enhancement identical to Premium Plus
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path('src/hq-lab.js')
+          s = p.read_text()
+          old = """      filters: [
+        'hqdn3d=0.06:0.06:0.24:0.24',
+        'unsharp=5:5:0.223:3:3:0.0',
+        'eq=contrast=1.009:saturation=1.011',
+      ],"""
+          new = """      filters: [
+        'hqdn3d=0.18:0.18:0.70:0.70',
+        'unsharp=5:5:0.18:3:3:0.0',
+        'eq=contrast=1.012:saturation=1.015',
+      ],"""
+          if old not in s:
+              raise SystemExit('Expected V2 enhancement block not found')
+          s = s.replace(old, new, 1)
+          p.write_text(s)
+
+          p = Path('src/features/hq-lab.js')
+          s = p.read_text()
+          old = "Premium+ HQ V2 = formula V2 dengan enhancement terbaru."
+          new = "Premium+ HQ V2 = enhancement 100% sama seperti Premium+; encoder/bitrate V2 kekal."
+          if old in s:
+              s = s.replace(old, new, 1)
+          p.write_text(s)
+          PY
+
+      - name: Commit patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'abangrenderofficial-oss'
+          git config user.email 'abangrenderofficial@gmail.com'
+          git add src/hq-lab.js src/features/hq-lab.js
+          git diff --cached --quiet && exit 0
+          git commit -m 'Match HQ Lab V2 enhancement to Premium Plus'
+          git push origin main
