@@ -88,22 +88,31 @@ async function cleanup(paths) {
   await Promise.all([...new Set(paths)].map((filePath) => rm(filePath, { force: true }).catch(() => {})));
 }
 
+function premiumPlusImageFilter() {
+  // Match the Premium+ HQ V2 preservation philosophy used for video:
+  // no artificial denoise/sharpen pass, no upscaling, and pre-size the image
+  // to a WhatsApp-friendly canvas so WhatsApp has less work to recompress.
+  const squareish = 'lt(abs(iw-ih)/max(iw,ih),0.08)';
+  const maxWidth = `if(${squareish},1280,if(gt(iw,ih),1280,720))`;
+  const maxHeight = `if(${squareish},1280,if(gt(iw,ih),720,1280))`;
+  const fit = `min(1,min(${maxWidth}/iw,${maxHeight}/ih))`;
+
+  return [
+    `scale=w='max(2,trunc(iw*${fit}/2)*2)':h='max(2,trunc(ih*${fit}/2)*2)':flags=lanczos`,
+    'setsar=1',
+    'format=yuvj420p',
+  ].join(',');
+}
+
 export async function prepareWhatsAppStatusImageHQ({ image }) {
   const attemptId = randomUUID();
   const base = path.join(tmpdir(), `ar-status-image-${attemptId}`);
   const inputPath = `${base}-source.${safeExtension(image)}`;
-  const outputPath = `${base}-status-hq.jpg`;
+  const outputPath = `${base}-premium-plus-hq.jpg`;
   const allPaths = [inputPath, outputPath];
 
   try {
     await downloadRemoteImage(image, inputPath);
-
-    const filter = [
-      "scale=w='if(gt(iw,ih),min(iw,1920),min(iw,1080))':h='if(gt(iw,ih),min(ih,1080),min(ih,1920))':force_original_aspect_ratio=decrease:flags=lanczos",
-      "scale=w='max(2,trunc(iw/2)*2)':h='max(2,trunc(ih/2)*2)'",
-      'setsar=1',
-      'format=yuvj420p',
-    ].join(',');
 
     await execFileAsync(
       ffmpegPath,
@@ -115,7 +124,7 @@ export async function prepareWhatsAppStatusImageHQ({ image }) {
         '-nostdin',
         '-filter_threads', '1',
         '-i', inputPath,
-        '-vf', filter,
+        '-vf', premiumPlusImageFilter(),
         '-frames:v', '1',
         '-q:v', '2',
         '-threads', '1',
@@ -127,7 +136,7 @@ export async function prepareWhatsAppStatusImageHQ({ image }) {
 
     const outputStat = await stat(outputPath);
     if (!outputStat.isFile() || !outputStat.size) {
-      const err = new Error('Status HQ image encoding completed without output.');
+      const err = new Error('Premium+ HQ image encoding completed without output.');
       err.code = 'STATUS_IMAGE_OUTPUT_MISSING';
       throw err;
     }
@@ -137,7 +146,7 @@ export async function prepareWhatsAppStatusImageHQ({ image }) {
     return {
       filePath: outputPath,
       size: outputStat.size,
-      quality: 'Status HQ image • JPEG quality 2 • ratio asal • Telegram-safe file',
+      quality: 'Premium+ HQ image • preservation V2 • 720×1280 / 1280×720 / 1280² max • JPEG q2 • Telegram-safe file',
       cleanup: async () => cleanup(allPaths),
     };
   } catch (error) {
