@@ -14,7 +14,7 @@ import {
 import { localMediaLane } from '../bot/job-lanes.js';
 import { removeHeavyProgress, startHeavyStatusProgress, startImageStatusProgress, startStatusProgress } from '../bot/progress.js';
 import { sendDocumentFileUpload } from '../bot/telegram-document.js';
-import { statusVideoCaption } from '../bot/status-caption.js';
+import { statusImageCaption, statusVideoCaption } from '../bot/status-caption.js';
 
 function cancelled(fence) {
   return fence && !isJobFenceActive(fence);
@@ -149,7 +149,7 @@ export async function processStatusButton(callbackQuery, context = {}) {
         return true;
       }
       await progress.complete();
-      await sendDocumentFileUpload(chatId, prepared.filePath, 'Gambar ni dah ready untuk upload ke status ✅', 'status-hq.jpg');
+      await sendDocumentFileUpload(chatId, prepared.filePath, await statusImageCaption(), 'status-hq.jpg');
     } else {
       prepared = await localMediaLane(async () => {
         let sourceError = null;
