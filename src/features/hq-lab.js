@@ -119,11 +119,11 @@ export async function handleHqLabCommand(message) {
       '• atau upload satu video dari Gallery',
       '',
       'Bot akan hasilkan 3 versi dari source yang sama:',
-      'C Sharp HQ • C+ HQ • C Balance HQ',
+      'C+ HQ • Premium+ HQ • Premium+ HQ V2',
       '',
-      'C = resepi Sharp HQ asal.',
-      'C+ = detail lebih bersih + micro-contrast.',
-      'C Balance = sharpening lebih lembut/natural.',
+      'C+ = resepi C+ HQ sedia ada.',
+      'Premium+ = formula Premium+ HQ asal.',
+      'Premium+ HQ V2 = formula V2 dengan enhancement terbaru.',
       '',
       'Audio source akan dipulihkan sekali jika platform beri video dan audio berasingan.',
       'Upload ketiga-tiga ke WhatsApp Status dan compare selepas WhatsApp compress.',
@@ -153,7 +153,7 @@ export async function processHqLabMessage(message, context = {}) {
   }
 
   state().delete(stateKey(message));
-  await sendMessage(chatId, '🧪 HQ Lab sedang buat 3 versi: C, C+ dan C Balance. Production user lain tak terjejas.').catch(() => {});
+  await sendMessage(chatId, '🧪 HQ Lab sedang buat 3 versi: C+ HQ, Premium+ HQ dan Premium+ HQ V2. Production user lain tak terjejas.').catch(() => {});
   await sendChatAction(chatId, 'upload_video').catch(() => {});
 
   let prepared = null;
@@ -176,7 +176,7 @@ export async function processHqLabMessage(message, context = {}) {
     } else {
       await sendMessage(
         chatId,
-        `✅ HQ Lab siap: C, C+ dan C Balance. Audio source: ${prepared.source?.hasAudio ? 'ada ✅' : 'tiada'}. Upload semua ke WhatsApp Status dan compare detail, naturalness dan motion selepas compression.`,
+        `✅ HQ Lab siap: C+ HQ, Premium+ HQ dan Premium+ HQ V2. Audio source: ${prepared.source?.hasAudio ? 'ada ✅' : 'tiada'}. Upload semua ke WhatsApp Status dan compare detail, naturalness dan motion selepas compression.`,
       ).catch(() => {});
     }
   } catch (error) {
