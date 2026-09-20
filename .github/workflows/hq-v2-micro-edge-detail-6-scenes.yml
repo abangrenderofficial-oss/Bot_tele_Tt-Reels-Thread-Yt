@@ -1,0 +1,122 @@
+name: HQ V2 Micro Edge Detail Tuning - 6 Scenes
+
+on:
+  push:
+    branches:
+      - hq-lab-chat-test-20260919
+    paths:
+      - .github/workflows/hq-v2-micro-edge-detail-6-scenes.yml
+
+permissions:
+  contents: read
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        include:
+          - folder: 01_Architecture
+            id: '36665562'
+            label: 'Architecture - Modern Building + Crowd'
+            color_enhance: 'false'
+          - folder: 02_Nature
+            id: '17854413'
+            label: 'Nature - Green Landscape'
+            color_enhance: 'false'
+          - folder: 03_Close_Up_Face
+            id: '7477535'
+            label: 'Close Up Face - Skin Detail'
+            color_enhance: 'false'
+          - folder: 04_Texture
+            id: '3094382'
+            label: 'Texture - Denim Macro'
+            color_enhance: 'false'
+          - folder: 05_Color_Enhance
+            id: '37315653'
+            label: 'Color Enhance - Vibrant Market'
+            color_enhance: 'true'
+          - folder: 06_Jungle_Waterfall
+            id: '6981404'
+            label: 'Jungle + Waterfall - Foliage + Water Motion'
+            color_enhance: 'false'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install FFmpeg and curl
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y ffmpeg curl
+
+      - name: Download same public source
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p source out/${{ matrix.folder }}
+          curl -L --fail --retry 3 -A 'Mozilla/5.0' \
+            'https://www.pexels.com/download/video/${{ matrix.id }}/' \
+            -o source/input.mp4
+
+      - name: Render controls and V2 tuning variants
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT='out/${{ matrix.folder }}'
+          EXTRA=''
+          if [ '${{ matrix.color_enhance }}' = 'true' ]; then
+            EXTRA=',eq=contrast=1.025:saturation=1.14:brightness=0.004'
+          fi
+
+          PSCALE="scale='if(gte(iw,ih),1280,-2)':'if(gte(iw,ih),-2,1280)':flags=lanczos,scale=trunc(iw/2)*2:trunc(ih/2)*2"
+          COMMON=( -y -hide_banner -loglevel error -nostdin -ss 1 -t 8 -i source/input.mp4 -map 0:v:0 -map '0:a:0?' )
+          AUDIO=( -c:a aac -profile:a aac_low -ar 48000 -ac 2 -b:a 128k -movflags +faststart -map_metadata -1 -threads 1 )
+
+          PENC=( -c:v libx264 -preset fast -pix_fmt yuv420p -b:v 3200k -maxrate 3776k -bufsize 7552k -profile:v main -level:v 3.1 -tag:v avc1 -g 60 -keyint_min 30 -sc_threshold 0 )
+          PPENC=( -c:v libx264 -preset veryfast -pix_fmt yuv420p -b:v 3350k -maxrate 3900k -bufsize 7800k -profile:v main -level:v 3.1 -tag:v avc1 -g 60 -keyint_min 30 -sc_threshold 0 )
+          V2ENC=( -c:v libx264 -preset fast -pix_fmt yuv420p -b:v 3900k -maxrate 4450k -bufsize 8900k -profile:v main -level:v 3.1 -tag:v avc1 -g 60 -keyint_min 30 -sc_threshold 0 )
+          TENC1=( -c:v libx264 -preset fast -pix_fmt yuv420p -b:v 4000k -maxrate 4450k -bufsize 8900k -profile:v main -level:v 3.1 -tag:v avc1 -g 60 -keyint_min 30 -sc_threshold 0 )
+          TENC2=( -c:v libx264 -preset fast -pix_fmt yuv420p -b:v 4050k -maxrate 4450k -bufsize 8900k -profile:v main -level:v 3.1 -tag:v avc1 -g 60 -keyint_min 30 -sc_threshold 0 )
+          TENC3=( -c:v libx264 -preset fast -pix_fmt yuv420p -b:v 4100k -maxrate 4450k -bufsize 8900k -profile:v main -level:v 3.1 -tag:v avc1 -g 60 -keyint_min 30 -sc_threshold 0 )
+          TENC4=( -c:v libx264 -preset fast -pix_fmt yuv420p -b:v 4150k -maxrate 4450k -bufsize 8900k -profile:v main -level:v 3.1 -tag:v avc1 -g 60 -keyint_min 30 -sc_threshold 0 )
+
+          # Locked controls
+          ffmpeg "${COMMON[@]}" -vf "$PSCALE,setsar=1,fps=30000/1001$EXTRA" "${PENC[@]}" "${AUDIO[@]}" "$OUT/01_Premium_HQ.mp4"
+          ffmpeg "${COMMON[@]}" -vf "$PSCALE,setsar=1,fps=30000/1001,hqdn3d=0.18:0.18:0.70:0.70,unsharp=5:5:0.18:3:3:0.0,eq=contrast=1.012:saturation=1.015$EXTRA" "${PPENC[@]}" "${AUDIO[@]}" "$OUT/02_Premium_Plus_HQ.mp4"
+
+          # Current V2 baseline
+          ffmpeg "${COMMON[@]}" -vf "$PSCALE,setsar=1,fps=30000/1001,hqdn3d=0.08:0.08:0.30:0.30,unsharp=5:5:0.10:3:3:0.0$EXTRA" "${V2ENC[@]}" "${AUDIO[@]}" "$OUT/03_V2_Current.mp4"
+
+          # T1: reduce cleanup, slight edge lift
+          ffmpeg "${COMMON[@]}" -vf "$PSCALE,setsar=1,fps=30000/1001,hqdn3d=0.04:0.04:0.15:0.15,unsharp=5:5:0.12:3:3:0.0$EXTRA" "${TENC1[@]}" "${AUDIO[@]}" "$OUT/04_V2_T1.mp4"
+
+          # T2: no denoise, 0.12 sharpen. Preserve real microtexture first.
+          ffmpeg "${COMMON[@]}" -vf "$PSCALE,setsar=1,fps=30000/1001,unsharp=5:5:0.12:3:3:0.0$EXTRA" "${TENC2[@]}" "${AUDIO[@]}" "$OUT/05_V2_T2.mp4"
+
+          # T3: no denoise, 0.14 sharpen. Aim to beat PP edge strength without EQ.
+          ffmpeg "${COMMON[@]}" -vf "$PSCALE,setsar=1,fps=30000/1001,unsharp=5:5:0.14:3:3:0.0$EXTRA" "${TENC3[@]}" "${AUDIO[@]}" "$OUT/06_V2_T3.mp4"
+
+          # T4: no denoise, 0.16 sharpen. Upper bound before naturalness likely drops.
+          ffmpeg "${COMMON[@]}" -vf "$PSCALE,setsar=1,fps=30000/1001,unsharp=5:5:0.16:3:3:0.0$EXTRA" "${TENC4[@]}" "${AUDIO[@]}" "$OUT/07_V2_T4.mp4"
+
+          ffmpeg -y -hide_banner -loglevel error -nostdin -ss 1 -t 8 -i source/input.mp4 -map 0:v:0 -map '0:a:0?' -c copy -map_metadata -1 "$OUT/00_Source_Reference.mp4" || true
+
+          cat > "$OUT/README.txt" <<EOF
+          ${{ matrix.label }}
+          Same Pexels ID and same 8-second segment as previous 3-way test.
+          Controls are unchanged.
+          Current V2 is unchanged.
+          T1-T4 only target the three weak points: detail retained, edge strength, micro-texture energy.
+          EQ remains removed on V2 candidates to protect natural look.
+          EOF
+
+      - name: Upload scene
+        uses: actions/upload-artifact@v4
+        with:
+          name: V2TUNE_${{ matrix.folder }}
+          path: out/${{ matrix.folder }}/
+          if-no-files-found: error
+          retention-days: 1
