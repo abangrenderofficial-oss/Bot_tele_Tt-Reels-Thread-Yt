@@ -150,6 +150,14 @@ function parseClockDuration(value) {
   return (Number(match[1]) * 3600) + (Number(match[2]) * 60) + Number(match[3]);
 }
 
+function sourceColorMode(videoLine = '') {
+  const line = String(videoLine || '').toLowerCase();
+  const bt2020 = line.includes('bt2020');
+  if (bt2020 && line.includes('arib-std-b67')) return 'hlg';
+  if (bt2020 && line.includes('smpte2084')) return 'pq';
+  return 'sdr';
+}
+
 async function probeLocalVideo(filePath) {
   let stderr = '';
   try {
@@ -159,7 +167,8 @@ async function probeLocalVideo(filePath) {
   }
 
   const duration = parseClockDuration(stderr.match(/Duration:\s*([^,]+)/i)?.[1] || '');
-  const dimensions = stderr.match(/Video:[^\n]*?\b(\d{2,5})x(\d{2,5})\b/i);
+  const videoLine = stderr.match(/Video:[^\n]+/i)?.[0] || '';
+  const dimensions = videoLine.match(/\b(\d{2,5})x(\d{2,5})\b/i);
   const hasAudio = /Audio:/i.test(stderr);
   if (!duration) {
     const err = new Error('Status HQ could not determine source duration.');
@@ -171,6 +180,7 @@ async function probeLocalVideo(filePath) {
     width: dimensions ? Number(dimensions[1]) : null,
     height: dimensions ? Number(dimensions[2]) : null,
     hasAudio,
+    colorMode: sourceColorMode(videoLine),
   };
 }
 
@@ -254,83 +264,34 @@ function targetOutputBytes() {
   return Math.floor(Math.min(requested, uploadLimit * 0.9));
 }
 
-function dimensionsForTier(probe, tier) {
+function premiumV2Dimensions(probe) {
   const width = Number(probe.width || 0);
   const height = Number(probe.height || 0);
-  const landscape = width > height;
   const squareish = width && height && Math.abs(width - height) / Math.max(width, height) < 0.08;
-
-  if (squareish) {
-    const side = tier === 1080 ? 1080 : tier === 720 ? 720 : tier === 540 ? 540 : 360;
-    return { maxWidth: side, maxHeight: side };
-  }
-  if (landscape) {
-    if (tier === 1080) return { maxWidth: 1920, maxHeight: 1080 };
-    if (tier === 720) return { maxWidth: 1280, maxHeight: 720 };
-    if (tier === 540) return { maxWidth: 960, maxHeight: 540 };
-    return { maxWidth: 640, maxHeight: 360 };
-  }
-  if (tier === 1080) return { maxWidth: 1080, maxHeight: 1920 };
-  if (tier === 720) return { maxWidth: 720, maxHeight: 1280 };
-  if (tier === 540) return { maxWidth: 540, maxHeight: 960 };
-  return { maxWidth: 360, maxHeight: 640 };
+  if (squareish) return { maxWidth: 1280, maxHeight: 1280 };
+  if (width > height) return { maxWidth: 1280, maxHeight: 720 };
+  return { maxWidth: 720, maxHeight: 1280 };
 }
 
 function chooseEncodePlan(probe) {
   const duration = Math.max(1, Number(probe.duration || 0));
   const audioKbps = probe.hasAudio ? 128 : 0;
   const targetBytes = targetOutputBytes();
-  const totalKbps = Math.max(300, Math.floor((targetBytes * 8 / duration / 1000) * 0.92));
-  const videoKbps = Math.max(180, Math.min(3200, totalKbps - audioKbps - 60));
-
-  let tier;
-  if (videoKbps >= 1050) tier = 720;
-  else if (videoKbps >= 650) tier = 540;
-  else tier = 360;
-
-  const longForm = duration >= 180;
-  const veryLong = duration >= 420;
-  if (veryLong && tier > 540) tier = 540;
-  const dimensions = dimensionsForTier(probe, tier);
-
+  const totalKbps = Math.max(500, Math.floor((targetBytes * 8 / duration / 1000) * 0.92));
+  const maxRateKbps = Math.max(300, Math.min(5000, totalKbps - audioKbps - 80));
   return {
     targetBytes,
     audioKbps,
-    videoKbps,
-    tier,
-    ...dimensions,
+    maxRateKbps,
+    bufferKbps: Math.max(1000, maxRateKbps * 2),
+    tier: 720,
+    ...premiumV2Dimensions(probe),
     duration,
     fps: '30000/1001',
-    preset: longForm ? 'superfast' : (videoKbps >= 1800 ? 'fast' : 'veryfast'),
-    scaleFlags: longForm ? 'bicubic' : 'lanczos',
-    threads: Math.max(1, Math.min(2, Number(process.env.STATUS_FFMPEG_THREADS || 1))),
-    filterThreads: Math.max(1, Math.min(2, Number(process.env.STATUS_FILTER_THREADS || 1))),
-  };
-}
-
-function resourceSafePlan(plan, probe) {
-  const tier = Math.min(Number(plan.tier || 720), 720);
-  return {
-    ...plan,
-    ...dimensionsForTier(probe, tier),
-    tier,
-    videoKbps: Math.min(Number(plan.videoKbps || 3000), 3000),
-    preset: 'veryfast',
     scaleFlags: 'lanczos',
     threads: 1,
     filterThreads: 1,
   };
-}
-
-function isResourceFailure(error) {
-  const signal = String(error?.signal || '').toUpperCase();
-  const code = String(error?.code || '').toUpperCase();
-  const message = String(error?.message || '').toUpperCase();
-  return signal === 'SIGKILL'
-    || code === 'ENOMEM'
-    || message.includes('SIGKILL')
-    || message.includes('OUT OF MEMORY')
-    || message.includes('ENOMEM');
 }
 
 function statusVideoFilter(plan) {
@@ -345,11 +306,20 @@ function statusVideoFilter(plan) {
   ].join(',');
 }
 
+function colorArgs(sourceProbe) {
+  if (sourceProbe?.colorMode === 'hlg') {
+    return ['-color_range', 'tv', '-color_primaries', 'bt2020', '-color_trc', 'arib-std-b67', '-colorspace', 'bt2020nc'];
+  }
+  if (sourceProbe?.colorMode === 'pq') {
+    return ['-color_range', 'tv', '-color_primaries', 'bt2020', '-color_trc', 'smpte2084', '-colorspace', 'bt2020nc'];
+  }
+  return ['-color_range', 'tv', '-color_primaries', 'bt709', '-color_trc', 'bt709', '-colorspace', 'bt709'];
+}
+
 async function encodeSingleStatusFile(inputPath, outputPath, plan, bitrateScale = 1, sourceProbe = null) {
   await rm(outputPath, { force: true }).catch(() => {});
-  const videoKbps = Math.max(160, Math.floor(plan.videoKbps * bitrateScale));
-  const maxRate = Math.max(videoKbps, Math.floor(videoKbps * 1.18));
-  const buffer = Math.max(maxRate * 2, 1000);
+  const maxRateKbps = Math.max(280, Math.floor(plan.maxRateKbps * bitrateScale));
+  const bufferKbps = Math.max(1000, maxRateKbps * 2);
   const hasAudio = Boolean(sourceProbe?.hasAudio);
   const args = [
     '-y', '-hide_banner', '-loglevel', 'error', '-nostats', '-nostdin',
@@ -357,21 +327,22 @@ async function encodeSingleStatusFile(inputPath, outputPath, plan, bitrateScale 
     '-i', inputPath,
     '-map', '0:v:0', ...(hasAudio ? ['-map', '0:a:0?'] : []),
     '-vf', statusVideoFilter(plan),
-    '-c:v', 'libx264', '-preset', plan.preset, '-pix_fmt', 'yuv420p',
-    '-b:v', `${videoKbps}k`, '-maxrate', `${maxRate}k`, '-bufsize', `${buffer}k`,
-    '-profile:v', 'main', '-level:v', '3.1', '-tag:v', 'avc1',
-    '-g', '60', '-keyint_min', '30', '-sc_threshold', '0',
+    '-c:v', 'libx265', '-preset', 'ultrafast', '-crf', '18',
+    '-maxrate', `${maxRateKbps}k`, '-bufsize', `${bufferKbps}k`,
+    '-pix_fmt', 'yuv420p10le', '-tag:v', 'hvc1',
+    '-x265-params', 'pools=1:frame-threads=1:vbv-init=0.8:scenecut=0',
+    ...colorArgs(sourceProbe),
     ...(hasAudio
       ? ['-c:a', 'aac', '-profile:a', 'aac_low', '-ar', '48000', '-ac', '2', '-b:a', `${plan.audioKbps || 128}k`]
       : ['-an']),
-    '-movflags', '+faststart', '-metadata:s:v:0', 'rotate=0',
+    '-brand', 'isom', '-movflags', '+faststart', '-metadata:s:v:0', 'rotate=0',
     '-map_metadata', '-1', '-f', 'mp4', '-threads', String(plan.threads ?? 1), outputPath,
   ];
 
   try {
-    await execFileAsync(ffmpegPath, args, commandOptions(Number(process.env.STATUS_ENCODE_TIMEOUT_MS || 260000)));
+    await execFileAsync(ffmpegPath, args, commandOptions(Number(process.env.STATUS_ENCODE_TIMEOUT_MS || 360000)));
   } catch (error) {
-    console.error('Status HQ ffmpeg failed:', {
+    console.error('Premium+ HQ V2 ffmpeg failed:', {
       code: error?.code ?? null,
       signal: error?.signal ?? null,
       killed: Boolean(error?.killed),
@@ -382,19 +353,19 @@ async function encodeSingleStatusFile(inputPath, outputPath, plan, bitrateScale 
 
   const fileStat = await stat(outputPath);
   if (!fileStat.isFile() || !fileStat.size) {
-    const err = new Error('Status HQ encoding completed without an output file.');
+    const err = new Error('Premium+ HQ V2 encoding completed without an output file.');
     err.code = 'STATUS_OUTPUT_MISSING';
     throw err;
   }
 
   const outputProbe = await probeLocalVideo(outputPath);
   if (hasAudio && !outputProbe.hasAudio) {
-    const err = new Error('Status HQ output lost the source audio track.');
+    const err = new Error('Premium+ HQ V2 output lost the source audio track.');
     err.code = 'STATUS_AUDIO_MISSING';
     throw err;
   }
 
-  return { size: fileStat.size, videoKbps, hasAudio: outputProbe.hasAudio };
+  return { size: fileStat.size, videoKbps: maxRateKbps, hasAudio: outputProbe.hasAudio };
 }
 
 async function cleanup(paths) {
@@ -429,8 +400,6 @@ export async function prepareWhatsAppStatusHQ({ sourceUrl, platform, video, audi
     inputPath = recovered.inputPath;
     const probe = recovered.probe;
     const plan = chooseEncodePlan(probe);
-    let activePlan = plan;
-    let resourceFallbackUsed = false;
     const safeLimit = Math.floor(configuredUploadLimitBytes() * 0.94);
     const attempts = [1, 0.84, 0.7];
     let encoded = null;
@@ -438,27 +407,16 @@ export async function prepareWhatsAppStatusHQ({ sourceUrl, platform, video, audi
     let usedAttempt = 0;
 
     for (let index = 0; index < attempts.length; index += 1) {
-      outputPath = `${base}-status-a${index + 1}.mp4`;
+      outputPath = `${base}-premium-plus-v2-a${index + 1}.mp4`;
       allPaths.push(outputPath);
-      try {
-        encoded = await encodeSingleStatusFile(inputPath, outputPath, activePlan, attempts[index], probe);
-      } catch (error) {
-        if (!resourceFallbackUsed && isResourceFailure(error)) {
-          resourceFallbackUsed = true;
-          activePlan = resourceSafePlan(plan, probe);
-          console.warn('[status-hq] FFmpeg resource kill detected; retrying with safe 720p/1-thread plan.');
-          index -= 1;
-          continue;
-        }
-        throw error;
-      }
+      encoded = await encodeSingleStatusFile(inputPath, outputPath, plan, attempts[index], probe);
       usedAttempt = index + 1;
       if (encoded.size <= safeLimit) break;
       await rm(outputPath, { force: true }).catch(() => {});
     }
 
     if (!encoded || encoded.size > safeLimit) {
-      const err = new Error(`Status HQ single-file output masih melebihi had Telegram (${encoded?.size || 0} bytes).`);
+      const err = new Error(`Premium+ HQ V2 output masih melebihi had Telegram (${encoded?.size || 0} bytes).`);
       err.code = 'STATUS_FILE_TOO_LARGE';
       throw err;
     }
@@ -469,12 +427,17 @@ export async function prepareWhatsAppStatusHQ({ sourceUrl, platform, video, audi
       size: encoded.size,
       source: probe,
       profile: {
-        mode: 'single', tier: activePlan.tier, maxWidth: activePlan.maxWidth, maxHeight: activePlan.maxHeight,
-        videoKbps: encoded.videoKbps, audioKbps: activePlan.audioKbps,
+        mode: 'premium-plus-v2',
+        tier: 720,
+        maxWidth: plan.maxWidth,
+        maxHeight: plan.maxHeight,
+        videoKbps: encoded.videoKbps,
+        audioKbps: plan.audioKbps,
         hasAudio: encoded.hasAudio,
-        resourceFallbackUsed,
+        colorMode: probe.colorMode,
+        codec: 'hevc-main10',
       },
-      quality: `Status HQ • single file • ${activePlan.tier}p class • H.264 Main/AAC-LC • mobile-safe${resourceFallbackUsed ? ' • safe fallback' : ''}`,
+      quality: `Premium+ HQ V2 • 720p class • 29.97fps • HEVC Main10/AAC-LC • preservation-first • ${probe.colorMode.toUpperCase()}`,
       attempt: usedAttempt,
       cleanup: async () => cleanup(allPaths),
     };
