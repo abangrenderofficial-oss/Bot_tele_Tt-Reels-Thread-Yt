@@ -133,7 +133,8 @@ def probe_video(path):
     result = run(
         [
             'ffprobe', '-v', 'error', '-select_streams', 'v:0',
-            '-show_entries', 'stream=width,height,r_frame_rate:format=duration',
+            '-show_entries',
+            'stream=width,height,r_frame_rate,color_range,color_space,color_transfer,color_primaries:format=duration',
             '-of', 'json', str(path),
         ],
         timeout=60,
@@ -146,7 +147,15 @@ def probe_video(path):
     height = int(stream.get('height') or 0)
     if duration <= 0:
         raise RuntimeError('Tak dapat baca duration video.')
-    return {'duration': duration, 'width': width, 'height': height}
+    return {
+        'duration': duration,
+        'width': width,
+        'height': height,
+        'color_range': str(stream.get('color_range') or ''),
+        'color_space': str(stream.get('color_space') or ''),
+        'color_transfer': str(stream.get('color_transfer') or ''),
+        'color_primaries': str(stream.get('color_primaries') or ''),
+    }
 
 
 def even_floor(value):
@@ -177,18 +186,6 @@ def target_dimensions(width, height, video_kbps, live=False):
     return even_floor(width * scale), even_floor(height * scale)
 
 
-def status_tier(video_kbps, android=False):
-    if android:
-        return 720
-    if video_kbps >= 2400:
-        return 1080
-    if video_kbps >= 1050:
-        return 720
-    if video_kbps >= 650:
-        return 540
-    return 360
-
-
 def status_plan(probe, android=False):
     duration = max(1.0, probe['duration'])
     target_bytes = int(43.5 * MB)
@@ -199,7 +196,7 @@ def status_plan(probe, android=False):
     return {
         'video_kbps': video_kbps,
         'audio_kbps': audio_kbps,
-        'tier': status_tier(video_kbps, android=android),
+        'tier': 720,
         'android': android,
     }
 
@@ -208,9 +205,6 @@ def status_scale_filter(tier, android=False):
     if android:
         landscape_w, landscape_h = 1280, 720
         portrait_w, portrait_h = 720, 1280
-    elif tier == 1080:
-        landscape_w, landscape_h = 1920, 1080
-        portrait_w, portrait_h = 1080, 1920
     elif tier == 720:
         landscape_w, landscape_h = 1280, 720
         portrait_w, portrait_h = 720, 1280
@@ -230,6 +224,43 @@ def status_scale_filter(tier, android=False):
     )
 
 
+def premium_v2_scale_filter(probe):
+    width = int(probe.get('width') or 0)
+    height = int(probe.get('height') or 0)
+    squareish = width and height and abs(width - height) / max(width, height) < 0.08
+    if squareish:
+        max_w, max_h = 1280, 1280
+    elif width > height:
+        max_w, max_h = 1280, 720
+    else:
+        max_w, max_h = 720, 1280
+    fit = f'min(1,min({max_w}/iw,{max_h}/ih))'
+    return (
+        f"scale=w='max(2,trunc(iw*{fit}/2)*2)':"
+        f"h='max(2,trunc(ih*{fit}/2)*2)':flags=lanczos"
+    )
+
+
+def premium_v2_color_args(probe):
+    transfer = str(probe.get('color_transfer') or '').lower()
+    primaries = str(probe.get('color_primaries') or '').lower()
+    bt2020 = 'bt2020' in primaries or 'bt2020' in str(probe.get('color_space') or '').lower()
+    if bt2020 and transfer == 'arib-std-b67':
+        return [
+            '-color_range', 'tv', '-color_primaries', 'bt2020',
+            '-color_trc', 'arib-std-b67', '-colorspace', 'bt2020nc',
+        ]
+    if bt2020 and transfer == 'smpte2084':
+        return [
+            '-color_range', 'tv', '-color_primaries', 'bt2020',
+            '-color_trc', 'smpte2084', '-colorspace', 'bt2020nc',
+        ]
+    return [
+        '-color_range', 'tv', '-color_primaries', 'bt709',
+        '-color_trc', 'bt709', '-colorspace', 'bt709',
+    ]
+
+
 def encode_status(input_path, output_path, probe, android=False):
     plan = status_plan(probe, android=android)
     safe_limit = int(47 * MB)
@@ -237,28 +268,43 @@ def encode_status(input_path, output_path, probe, android=False):
         if output_path.exists():
             output_path.unlink()
         video_kbps = max(180, int(plan['video_kbps'] * bitrate_scale))
-        maxrate = max(video_kbps, int(video_kbps * (1.12 if android else 1.15)))
-        bufsize = max(1000, maxrate * 2)
-        cmd = [
-            'ffmpeg', '-y', '-hide_banner', '-loglevel', 'error', '-nostdin',
-            '-filter_threads', '1', '-i', str(input_path), '-map', '0:v:0', '-map', '0:a:0?'
-        ]
-        filters = [status_scale_filter(plan['tier'], android=android), 'setsar=1']
+
         if android:
-            filters.append('fps=30')
-        cmd += ['-vf', ','.join(filters)]
-        cmd += [
-            '-c:v', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p',
-            '-b:v', f'{video_kbps}k', '-maxrate', f'{maxrate}k', '-bufsize', f'{bufsize}k',
-            '-profile:v', 'high', '-level:v', '3.1' if android else '4.1',
-        ]
-        if android:
-            cmd += ['-g', '60', '-keyint_min', '60', '-sc_threshold', '0']
-        cmd += [
-            '-c:a', 'aac', '-ar', '44100', '-ac', '2', '-b:a', f"{plan['audio_kbps']}k",
-            '-movflags', '+faststart', '-metadata:s:v:0', 'rotate=0', '-map_metadata', '-1',
-            '-threads', '2', str(output_path),
-        ]
+            maxrate = max(video_kbps, int(video_kbps * 1.12))
+            bufsize = max(1000, maxrate * 2)
+            filters = [status_scale_filter(plan['tier'], android=True), 'setsar=1', 'fps=30']
+            cmd = [
+                'ffmpeg', '-y', '-hide_banner', '-loglevel', 'error', '-nostdin',
+                '-filter_threads', '1', '-i', str(input_path), '-map', '0:v:0', '-map', '0:a:0?',
+                '-vf', ','.join(filters),
+                '-c:v', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p',
+                '-b:v', f'{video_kbps}k', '-maxrate', f'{maxrate}k', '-bufsize', f'{bufsize}k',
+                '-profile:v', 'high', '-level:v', '3.1',
+                '-g', '60', '-keyint_min', '60', '-sc_threshold', '0',
+                '-c:a', 'aac', '-ar', '44100', '-ac', '2', '-b:a', f"{plan['audio_kbps']}k",
+                '-movflags', '+faststart', '-metadata:s:v:0', 'rotate=0', '-map_metadata', '-1',
+                '-threads', '2', str(output_path),
+            ]
+        else:
+            # Production Premium+ HQ V2 benchmark formula:
+            # 720p class / 29.97fps / HEVC Main10 / CRF18 / preservation-only.
+            maxrate = video_kbps
+            bufsize = max(1000, maxrate * 2)
+            filters = [premium_v2_scale_filter(probe), 'setsar=1', 'fps=30000/1001']
+            cmd = [
+                'ffmpeg', '-y', '-hide_banner', '-loglevel', 'error', '-nostdin',
+                '-filter_threads', '1', '-i', str(input_path), '-map', '0:v:0', '-map', '0:a:0?',
+                '-vf', ','.join(filters),
+                '-c:v', 'libx265', '-preset', 'ultrafast', '-crf', '18',
+                '-maxrate', f'{maxrate}k', '-bufsize', f'{bufsize}k',
+                '-pix_fmt', 'yuv420p10le', '-tag:v', 'hvc1',
+                '-x265-params', 'pools=1:frame-threads=1:vbv-init=0.8:scenecut=0',
+                *premium_v2_color_args(probe),
+                '-c:a', 'aac', '-profile:a', 'aac_low', '-ar', '48000', '-ac', '2', '-b:a', f"{plan['audio_kbps']}k",
+                '-brand', 'isom', '-movflags', '+faststart', '-metadata:s:v:0', 'rotate=0', '-map_metadata', '-1',
+                '-threads', '1', str(output_path),
+            ]
+
         run(cmd, timeout=1200)
         if output_path.stat().st_size <= safe_limit:
             return
