@@ -104,7 +104,10 @@ if (!packageJson.includes('check-feature-boundaries.mjs')) {
 }
 
 const statusCore = await readFile(path.join(root, 'src', 'status-hq.js'), 'utf8');
-if (!statusCore.includes('STATUS_FFMPEG_THREADS') || !statusCore.includes('STATUS_FILTER_THREADS')) {
+const envBoundedThreads = statusCore.includes('STATUS_FFMPEG_THREADS') && statusCore.includes('STATUS_FILTER_THREADS');
+const hardBoundedPremiumV2Threads = statusCore.includes("'-filter_threads', String(plan.filterThreads ?? 1)")
+  && statusCore.includes("'-x265-params', 'pools=1:frame-threads=1");
+if (!envBoundedThreads && !hardBoundedPremiumV2Threads) {
   fail('Status HQ is missing bounded FFmpeg thread configuration');
 }
 if (!statusCore.includes('fetchWithHeaderTimeout')) {
