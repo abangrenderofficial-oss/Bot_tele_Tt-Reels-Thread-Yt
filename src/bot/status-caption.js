@@ -19,6 +19,10 @@ export function statusVideoCaption() {
   return buildStatusCaption('Video Ready For Status ✅');
 }
 
+export function statusImageCaption() {
+  return buildStatusCaption('Image Ready For Status ✅');
+}
+
 export function statusAndroidVideoCaption() {
   return buildStatusCaption('Video Ready For Android Status ✅');
 }
