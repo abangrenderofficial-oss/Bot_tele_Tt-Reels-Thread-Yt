@@ -1,0 +1,130 @@
+name: HQ Lab Premium Plus V2 12 Scenes
+
+on:
+  push:
+    branches:
+      - hq-lab-chat-test-20260919
+    paths:
+      - .github/workflows/hq-lab-premium-plus-v2-12-scenes.yml
+
+permissions:
+  contents: read
+
+jobs:
+  render-v2:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        include:
+          - folder: 01_Architecture_Edinburgh_Crowd
+            id: '30786961'
+            label: 'Architecture (Edinburgh + Crowd)'
+            color_enhance: 'false'
+          - folder: 02_Night_City_Crowd
+            id: '29218502'
+            label: 'Night City + Crowd'
+            color_enhance: 'false'
+          - folder: 03_Leaves_Water
+            id: '14622819'
+            label: 'Leaves + Water'
+            color_enhance: 'false'
+          - folder: 04_Outdoor_City_China_Crowd
+            id: '36748028'
+            label: 'Outdoor City (China + Crowd)'
+            color_enhance: 'false'
+          - folder: 05_Nature_Beach
+            id: '10268678'
+            label: 'Nature Beach'
+            color_enhance: 'false'
+          - folder: 06_Nature_Kashmir
+            id: '35417044'
+            label: 'Nature (Kashmir)'
+            color_enhance: 'false'
+          - folder: 07_Sky_Cloud
+            id: '4496903'
+            label: 'Sky Cloud'
+            color_enhance: 'false'
+          - folder: 08_Close_Up_Face
+            id: '9246686'
+            label: 'Close Up Face'
+            color_enhance: 'false'
+          - folder: 09_Text_Word
+            id: '5283822'
+            label: 'Text / Word'
+            color_enhance: 'false'
+          - folder: 10_Finger_Typing
+            id: '5647327'
+            label: 'Finger Typing'
+            color_enhance: 'false'
+          - folder: 11_Color_Vibrant
+            id: '37315653'
+            label: 'Color / Vibrant'
+            color_enhance: 'false'
+          - folder: 12_Color_Enhance
+            id: '5658949'
+            label: 'Color Enhance'
+            color_enhance: 'true'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install FFmpeg and curl
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y ffmpeg curl
+
+      - name: Download exact fresh source
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p source out/${{ matrix.folder }}
+          curl -L --fail --retry 3 -A 'Mozilla/5.0' \
+            'https://www.pexels.com/download/video/${{ matrix.id }}/' \
+            -o source/input.mp4
+
+      - name: Render Premium Plus HQ V2 Preservation
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT='out/${{ matrix.folder }}'
+          LABEL='${{ matrix.label }}'
+
+          EXTRA=''
+          if [ '${{ matrix.color_enhance }}' = 'true' ]; then
+            EXTRA=',eq=contrast=1.025:saturation=1.14:brightness=0.004'
+          fi
+
+          # V2 preservation formula derived from the successful Bridge V2 test:
+          # 720/1280 long-edge master, ~29.97 fps, HEVC Main10, ~5.15 Mbps,
+          # no sharpen/denoise/contrast/saturation on normal categories.
+          PSCALE="scale='if(gte(iw,ih),1280,-2)':'if(gte(iw,ih),-2,1280)':flags=lanczos,scale=trunc(iw/2)*2:trunc(ih/2)*2"
+
+          ffmpeg -y -hide_banner -loglevel error -nostdin \
+            -ss 1 -t 8 -i source/input.mp4 \
+            -map 0:v:0 -map '0:a:0?' \
+            -vf "$PSCALE,setsar=1,fps=30000/1001$EXTRA" \
+            -c:v libx265 -preset veryfast \
+            -pix_fmt yuv420p10le -tag:v hvc1 \
+            -b:v 5150k -maxrate 6000k -bufsize 12000k \
+            -x265-params 'pools=2:frame-threads=2' \
+            -c:a aac -profile:a aac_low -ar 48000 -ac 2 -b:a 128k \
+            -movflags +faststart -map_metadata -1 \
+            "$OUT/06_Premium_Plus_HQ_V2.mp4"
+
+          cat > "$OUT/README_V2.txt" <<EOF
+          $LABEL
+          Source Pexels ID: ${{ matrix.id }}
+          Exact same source and 8-second segment as the existing 5-formula fresh test.
+          Premium+ HQ V2: preservation-first; 1280 long-edge; 29.97fps; HEVC Main10; ~5.15 Mbps; no sharpen/denoise/visual EQ except the dedicated Color Enhance row.
+          EOF
+
+      - name: Upload V2 scene
+        uses: actions/upload-artifact@v4
+        with:
+          name: V2_${{ matrix.folder }}
+          path: out/${{ matrix.folder }}/
+          if-no-files-found: error
+          retention-days: 1
