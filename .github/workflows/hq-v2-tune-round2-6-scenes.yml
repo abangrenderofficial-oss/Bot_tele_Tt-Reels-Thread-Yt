@@ -1,0 +1,82 @@
+name: HQ V2 Tune Round 2 - 6 Scenes
+
+on:
+  push:
+    branches:
+      - hq-lab-chat-test-20260919
+    paths:
+      - .github/workflows/hq-v2-tune-round2-6-scenes.yml
+
+permissions:
+  contents: read
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        include:
+          - folder: 01_Architecture
+            id: '36665562'
+            color_enhance: 'false'
+          - folder: 02_Nature
+            id: '17854413'
+            color_enhance: 'false'
+          - folder: 03_Close_Up_Face
+            id: '7477535'
+            color_enhance: 'false'
+          - folder: 04_Texture
+            id: '3094382'
+            color_enhance: 'false'
+          - folder: 05_Color_Enhance
+            id: '37315653'
+            color_enhance: 'true'
+          - folder: 06_Jungle_Waterfall
+            id: '6981404'
+            color_enhance: 'false'
+
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install FFmpeg and curl
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y ffmpeg curl
+      - name: Download same source
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p source out/${{ matrix.folder }}
+          curl -L --fail --retry 3 -A 'Mozilla/5.0' 'https://www.pexels.com/download/video/${{ matrix.id }}/' -o source/input.mp4
+      - name: Render round 2 candidates
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT='out/${{ matrix.folder }}'
+          EXTRA=''
+          if [ '${{ matrix.color_enhance }}' = 'true' ]; then
+            EXTRA=',eq=contrast=1.025:saturation=1.14:brightness=0.004'
+          fi
+          PSCALE="scale='if(gte(iw,ih),1280,-2)':'if(gte(iw,ih),-2,1280)':flags=lanczos,scale=trunc(iw/2)*2:trunc(ih/2)*2"
+          COMMON=( -y -hide_banner -loglevel error -nostdin -ss 1 -t 8 -i source/input.mp4 -map 0:v:0 -map '0:a:0?' )
+          AUDIO=( -c:a aac -profile:a aac_low -ar 48000 -ac 2 -b:a 128k -movflags +faststart -map_metadata -1 -threads 1 )
+          E18=( -c:v libx264 -preset fast -pix_fmt yuv420p -b:v 4200k -maxrate 4550k -bufsize 9100k -profile:v main -level:v 3.1 -tag:v avc1 -g 60 -keyint_min 30 -sc_threshold 0 )
+          E20=( -c:v libx264 -preset fast -pix_fmt yuv420p -b:v 4250k -maxrate 4600k -bufsize 9200k -profile:v main -level:v 3.1 -tag:v avc1 -g 60 -keyint_min 30 -sc_threshold 0 )
+          E22=( -c:v libx264 -preset fast -pix_fmt yuv420p -b:v 4300k -maxrate 4650k -bufsize 9300k -profile:v main -level:v 3.1 -tag:v avc1 -g 60 -keyint_min 30 -sc_threshold 0 )
+          E24=( -c:v libx264 -preset fast -pix_fmt yuv420p -b:v 4350k -maxrate 4700k -bufsize 9400k -profile:v main -level:v 3.1 -tag:v avc1 -g 60 -keyint_min 30 -sc_threshold 0 )
+
+          # Keep the already-winning V2 direction: no Premium+ EQ and no denoise.
+          ffmpeg "${COMMON[@]}" -vf "$PSCALE,setsar=1,fps=30000/1001,unsharp=5:5:0.18:3:3:0.0$EXTRA" "${E18[@]}" "${AUDIO[@]}" "$OUT/08_V2_T5_u018.mp4"
+          ffmpeg "${COMMON[@]}" -vf "$PSCALE,setsar=1,fps=30000/1001,unsharp=5:5:0.20:3:3:0.0$EXTRA" "${E20[@]}" "${AUDIO[@]}" "$OUT/09_V2_T6_u020.mp4"
+          ffmpeg "${COMMON[@]}" -vf "$PSCALE,setsar=1,fps=30000/1001,unsharp=5:5:0.22:3:3:0.0$EXTRA" "${E22[@]}" "${AUDIO[@]}" "$OUT/10_V2_T7_u022.mp4"
+          ffmpeg "${COMMON[@]}" -vf "$PSCALE,setsar=1,fps=30000/1001,unsharp=5:5:0.24:3:3:0.0$EXTRA" "${E24[@]}" "${AUDIO[@]}" "$OUT/11_V2_T8_u024.mp4"
+          ffmpeg -y -hide_banner -loglevel error -nostdin -ss 1 -t 8 -i source/input.mp4 -map 0:v:0 -map '0:a:0?' -c copy -map_metadata -1 "$OUT/00_Source_Reference.mp4" || true
+      - name: Upload scene
+        uses: actions/upload-artifact@v4
+        with:
+          name: V2R2_${{ matrix.folder }}
+          path: out/${{ matrix.folder }}/
+          if-no-files-found: error
+          retention-days: 1
