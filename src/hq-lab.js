@@ -296,22 +296,21 @@ function cappedSourceBox(probe, maxLong, maxShort) {
     : { maxWidth: maxShort, maxHeight: maxLong };
 }
 
+function proportionalRate(value, target, cap) {
+  if (value >= target) return cap;
+  return Math.max(value, Math.round(value * (cap / target)));
+}
+
 function variantsFor(probe) {
   const base = currentPlan(probe);
   const cBox = cappedSourceBox(probe, 1920, 1080);
+  const statusBox = cappedSourceBox(probe, 1280, 720);
+  const premiumKbps = Math.min(base.videoKbps, 3350);
+  const v2Kbps = Math.min(base.videoKbps, 4300);
 
   return [
     {
-      id: 'C', slug: 'c', name: 'Sharp HQ', label: 'C  SHARP HQ',
-      ...base,
-      ...cBox,
-      preset: 'fast',
-      scaleFlags: 'lanczos',
-      filters: ['unsharp=5:5:0.45:3:3:0.0'],
-      tune: 'film',
-    },
-    {
-      id: 'C+', slug: 'cplus', name: 'C+ HQ', label: 'C+  HQ',
+      id: 'C+', slug: 'cplus', name: 'C+ HQ', label: 'C+ HQ',
       ...base,
       ...cBox,
       preset: 'fast',
@@ -324,17 +323,48 @@ function variantsFor(probe) {
       tune: 'film',
     },
     {
-      id: 'C BALANCE', slug: 'cbalance', name: 'C Balance HQ', label: 'C BALANCE HQ',
+      id: 'PREMIUM+', slug: 'premiumplus', name: 'Premium+ HQ', label: 'PREMIUM+ HQ',
       ...base,
-      ...cBox,
+      ...statusBox,
+      videoKbps: premiumKbps,
+      maxRateKbps: proportionalRate(premiumKbps, 3350, 3900),
+      bufferKbps: proportionalRate(premiumKbps, 3350, 7800),
+      preset: 'veryfast',
+      scaleFlags: 'lanczos',
+      filters: [
+        'hqdn3d=0.18:0.18:0.70:0.70',
+        'unsharp=5:5:0.18:3:3:0.0',
+        'eq=contrast=1.012:saturation=1.015',
+      ],
+      profile: 'main',
+      level: '3.1',
+      tag: 'avc1',
+      gop: 60,
+      keyintMin: 30,
+      sceneThreshold: 0,
+      audioHz: 48000,
+    },
+    {
+      id: 'PREMIUM+ V2', slug: 'premiumplus-v2', name: 'Premium+ HQ V2', label: 'PREMIUM+ HQ V2',
+      ...base,
+      ...statusBox,
+      videoKbps: v2Kbps,
+      maxRateKbps: proportionalRate(v2Kbps, 4300, 4650),
+      bufferKbps: proportionalRate(v2Kbps, 4300, 9300),
       preset: 'fast',
       scaleFlags: 'lanczos',
       filters: [
-        'hqdn3d=0.25:0.25:1.0:1.0',
-        'unsharp=5:5:0.28:3:3:0.0',
-        'eq=contrast=1.008:saturation=1.005',
+        'hqdn3d=0.06:0.06:0.24:0.24',
+        'unsharp=5:5:0.223:3:3:0.0',
+        'eq=contrast=1.009:saturation=1.011',
       ],
-      tune: 'film',
+      profile: 'main',
+      level: '3.1',
+      tag: 'avc1',
+      gop: 60,
+      keyintMin: 30,
+      sceneThreshold: 0,
+      audioHz: 48000,
     },
   ];
 }
@@ -405,8 +435,11 @@ async function videoFilter(variant, burnLabel) {
 
 async function encodeVariant(inputPath, outputPath, variant, burnLabel, hasAudio) {
   await rm(outputPath, { force: true }).catch(() => {});
-  const maxRate = Math.max(variant.videoKbps, Math.floor(variant.videoKbps * 1.18));
-  const buffer = Math.max(1000, maxRate * 2);
+  const maxRate = Math.max(
+    variant.videoKbps,
+    Number(variant.maxRateKbps || Math.floor(variant.videoKbps * 1.18)),
+  );
+  const buffer = Math.max(1000, Number(variant.bufferKbps || maxRate * 2));
   const filter = await videoFilter(variant, burnLabel);
   const args = [
     '-y', '-hide_banner', '-loglevel', 'error', '-nostats', '-nostdin',
@@ -416,9 +449,13 @@ async function encodeVariant(inputPath, outputPath, variant, burnLabel, hasAudio
     '-vf', filter,
     '-c:v', 'libx264', '-preset', variant.preset, '-pix_fmt', 'yuv420p',
     '-b:v', `${variant.videoKbps}k`, '-maxrate', `${maxRate}k`, '-bufsize', `${buffer}k`,
-    '-profile:v', 'high', '-level:v', '4.0',
+    '-profile:v', variant.profile || 'high', '-level:v', variant.level || '4.0',
+    ...(variant.tag ? ['-tag:v', variant.tag] : []),
+    ...(variant.gop ? ['-g', String(variant.gop)] : []),
+    ...(variant.keyintMin ? ['-keyint_min', String(variant.keyintMin)] : []),
+    ...(Number.isFinite(Number(variant.sceneThreshold)) ? ['-sc_threshold', String(variant.sceneThreshold)] : []),
     ...(variant.tune ? ['-tune', variant.tune] : []),
-    ...(hasAudio ? ['-c:a', 'aac', '-ar', '44100', '-ac', '2', '-b:a', `${variant.audioKbps || 128}k`] : ['-an']),
+    ...(hasAudio ? ['-c:a', 'aac', '-ar', String(variant.audioHz || 44100), '-ac', '2', '-b:a', `${variant.audioKbps || 128}k`] : ['-an']),
     '-brand', 'isom', '-movflags', '+faststart', '-metadata:s:v:0', 'rotate=0',
     '-map_metadata', '-1', '-f', 'mp4', '-threads', '1', outputPath,
   ];
