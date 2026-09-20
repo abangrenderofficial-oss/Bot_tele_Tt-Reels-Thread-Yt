@@ -354,9 +354,9 @@ function variantsFor(probe) {
       preset: 'fast',
       scaleFlags: 'lanczos',
       filters: [
-        'hqdn3d=0.06:0.06:0.24:0.24',
-        'unsharp=5:5:0.223:3:3:0.0',
-        'eq=contrast=1.009:saturation=1.011',
+        'hqdn3d=0.18:0.18:0.70:0.70',
+        'unsharp=5:5:0.18:3:3:0.0',
+        'eq=contrast=1.012:saturation=1.015',
       ],
       profile: 'main',
       level: '3.1',

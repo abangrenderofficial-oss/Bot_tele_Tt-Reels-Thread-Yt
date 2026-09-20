@@ -123,7 +123,7 @@ export async function handleHqLabCommand(message) {
       '',
       'C+ = resepi C+ HQ sedia ada.',
       'Premium+ = formula Premium+ HQ asal.',
-      'Premium+ HQ V2 = formula V2 dengan enhancement terbaru.',
+      'Premium+ HQ V2 = enhancement 100% sama seperti Premium+; encoder/bitrate V2 kekal.',
       '',
       'Audio source akan dipulihkan sekali jika platform beri video dan audio berasingan.',
       'Upload ketiga-tiga ke WhatsApp Status dan compare selepas WhatsApp compress.',
