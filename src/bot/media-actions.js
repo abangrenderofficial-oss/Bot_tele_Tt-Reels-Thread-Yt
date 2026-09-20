@@ -73,7 +73,7 @@ export function mediaActionButtons(sourceUrl = '') {
 export function imageStatusButton() {
   return {
     reply_markup: {
-      inline_keyboard: [[{ text: '📱 Status HQ', callback_data: MEDIA_STATUS_HQ }]],
+      inline_keyboard: [[{ text: '✨ Premium+ 𝗛𝗤', callback_data: MEDIA_STATUS_HQ }]],
     },
   };
 }
