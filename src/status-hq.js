@@ -264,6 +264,12 @@ function targetOutputBytes() {
   return Math.floor(Math.min(requested, uploadLimit * 0.9));
 }
 
+function boundedThreadCount(envName) {
+  const value = Number(process.env[envName] || 1);
+  if (!Number.isFinite(value)) return 1;
+  return Math.max(1, Math.min(2, Math.floor(value)));
+}
+
 function premiumV2Dimensions(probe) {
   const width = Number(probe.width || 0);
   const height = Number(probe.height || 0);
@@ -289,8 +295,8 @@ function chooseEncodePlan(probe) {
     duration,
     fps: '30000/1001',
     scaleFlags: 'lanczos',
-    threads: 1,
-    filterThreads: 1,
+    threads: boundedThreadCount('STATUS_FFMPEG_THREADS'),
+    filterThreads: boundedThreadCount('STATUS_FILTER_THREADS'),
   };
 }
 
