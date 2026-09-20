@@ -1,0 +1,137 @@
+name: HQ 3-Way Premium V2 Natural - 6 Scenes
+
+on:
+  push:
+    branches:
+      - hq-lab-chat-test-20260919
+    paths:
+      - .github/workflows/hq-3way-premium-v2-natural-6-scenes.yml
+
+permissions:
+  contents: read
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        include:
+          - folder: 01_Architecture
+            id: '36665562'
+            label: 'Architecture - Modern Building + Crowd'
+            color_enhance: 'false'
+          - folder: 02_Nature
+            id: '17854413'
+            label: 'Nature - Green Landscape'
+            color_enhance: 'false'
+          - folder: 03_Close_Up_Face
+            id: '7477535'
+            label: 'Close Up Face - Skin Detail'
+            color_enhance: 'false'
+          - folder: 04_Texture
+            id: '3094382'
+            label: 'Texture - Denim Macro'
+            color_enhance: 'false'
+          - folder: 05_Color_Enhance
+            id: '37315653'
+            label: 'Color Enhance - Vibrant Market'
+            color_enhance: 'true'
+          - folder: 06_Jungle_Waterfall
+            id: '6981404'
+            label: 'Jungle + Waterfall - Foliage + Water Motion'
+            color_enhance: 'false'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install FFmpeg and curl
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y ffmpeg curl
+
+      - name: Download fresh public source
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p source out/${{ matrix.folder }}
+          curl -L --fail --retry 3 -A 'Mozilla/5.0' \
+            'https://www.pexels.com/download/video/${{ matrix.id }}/' \
+            -o source/input.mp4
+          ffprobe -v error -select_streams v:0 \
+            -show_entries stream=codec_name,width,height,pix_fmt,r_frame_rate,color_space,color_transfer,color_primaries \
+            -of default=noprint_wrappers=1 source/input.mp4
+
+      - name: Render Premium HQ, Premium Plus HQ and Experimental V2
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT='out/${{ matrix.folder }}'
+          LABEL='${{ matrix.label }}'
+
+          # Keep the same special Color Enhance treatment used in the previous lab,
+          # applied equally to all three formulas for an apples-to-apples scene test.
+          EXTRA=''
+          if [ '${{ matrix.color_enhance }}' = 'true' ]; then
+            EXTRA=',eq=contrast=1.025:saturation=1.14:brightness=0.004'
+          fi
+
+          PSCALE="scale='if(gte(iw,ih),1280,-2)':'if(gte(iw,ih),-2,1280)':flags=lanczos,scale=trunc(iw/2)*2:trunc(ih/2)*2"
+          COMMON=( -y -hide_banner -loglevel error -nostdin -ss 1 -t 8 -i source/input.mp4 -map 0:v:0 -map '0:a:0?' )
+
+          # Premium HQ ORIGINAL - locked control formula.
+          PENC=( -c:v libx264 -preset fast -pix_fmt yuv420p -b:v 3200k -maxrate 3776k -bufsize 7552k -profile:v main -level:v 3.1 -tag:v avc1 -g 60 -keyint_min 30 -sc_threshold 0 -c:a aac -profile:a aac_low -ar 48000 -ac 2 -b:a 128k -movflags +faststart -map_metadata -1 -threads 1 )
+
+          # Premium+ HQ ORIGINAL - locked current winner formula.
+          PPENC=( -c:v libx264 -preset veryfast -pix_fmt yuv420p -b:v 3350k -maxrate 3900k -bufsize 7800k -profile:v main -level:v 3.1 -tag:v avc1 -g 60 -keyint_min 30 -sc_threshold 0 -c:a aac -profile:a aac_low -ar 48000 -ac 2 -b:a 128k -movflags +faststart -map_metadata -1 -threads 1 )
+
+          # Premium+ HQ V2 EXPERIMENTAL.
+          # Starts from Premium+ but aims to raise naturalness above Premium HQ while
+          # preserving/winning detail: remove PP EQ, much lighter cleanup/sharpen,
+          # and spend compute/bitrate on real source texture instead of stronger filters.
+          V2ENC=( -c:v libx264 -preset fast -pix_fmt yuv420p -b:v 3900k -maxrate 4450k -bufsize 8900k -profile:v main -level:v 3.1 -tag:v avc1 -g 60 -keyint_min 30 -sc_threshold 0 -c:a aac -profile:a aac_low -ar 48000 -ac 2 -b:a 128k -movflags +faststart -map_metadata -1 -threads 1 )
+
+          ffmpeg "${COMMON[@]}" -vf "$PSCALE,setsar=1,fps=30000/1001$EXTRA" "${PENC[@]}" "$OUT/01_Premium_HQ.mp4"
+
+          ffmpeg "${COMMON[@]}" -vf "$PSCALE,setsar=1,fps=30000/1001,hqdn3d=0.18:0.18:0.70:0.70,unsharp=5:5:0.18:3:3:0.0,eq=contrast=1.012:saturation=1.015$EXTRA" "${PPENC[@]}" "$OUT/02_Premium_Plus_HQ.mp4"
+
+          ffmpeg "${COMMON[@]}" -vf "$PSCALE,setsar=1,fps=30000/1001,hqdn3d=0.08:0.08:0.30:0.30,unsharp=5:5:0.10:3:3:0.0$EXTRA" "${V2ENC[@]}" "$OUT/03_Premium_Plus_HQ_V2.mp4"
+
+          # Preserve the exact original source segment for later scoring after the
+          # WhatsApp-returned files come back. This is NOT for Status upload.
+          ffmpeg -y -hide_banner -loglevel error -nostdin -ss 1 -t 8 -i source/input.mp4 -map 0:v:0 -map '0:a:0?' -c copy -map_metadata -1 "$OUT/00_Source_Reference.mp4" || true
+
+          cat > "$OUT/README.txt" <<EOF
+          $LABEL
+          Pexels ID: ${{ matrix.id }}
+          Source: https://www.pexels.com/video/${{ matrix.id }}/
+          Exact same 8-second source segment for all formulas (-ss 1 -t 8).
+
+          STATUS TEST FILES:
+          01_Premium_HQ.mp4 = locked Premium HQ control
+          02_Premium_Plus_HQ.mp4 = locked Premium+ HQ control
+          03_Premium_Plus_HQ_V2.mp4 = experimental natural/detail V2
+
+          V2 changes vs Premium+:
+          - remove Premium+ contrast/saturation EQ
+          - hqdn3d 0.18/0.70 -> 0.08/0.30
+          - unsharp 0.18 -> 0.10
+          - x264 veryfast -> fast
+          - video target 3350k -> 3900k
+          - maxrate 3900k -> 4450k
+
+          Goal after WhatsApp recompression:
+          natural look > 97.0% if possible, target 97.5-98%;
+          detail > 85.3%; and beat controls on structure/edge/micro-texture where possible.
+          No target is treated as achieved until the WhatsApp-returned files are measured.
+          EOF
+
+      - name: Upload scene
+        uses: actions/upload-artifact@v4
+        with:
+          name: HQ3_${{ matrix.folder }}
+          path: out/${{ matrix.folder }}/
+          if-no-files-found: error
+          retention-days: 1
