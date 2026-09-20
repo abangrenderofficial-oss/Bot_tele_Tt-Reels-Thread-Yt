@@ -108,11 +108,10 @@ jobs:
             "${PPENC[@]}" "${AUDIO[@]}" \
             "$OUT/02_Premium_Plus_HQ.mp4"
 
-          # 3) V2 Hybrid Enhance: preserve V2's stronger detail path but add only a LIGHT dose
-          #    of Premium+ polish so natural fidelity is not sacrificed as heavily.
-          #    Denoise ~1/3 Premium+, contrast ~1/2, saturation ~1/2; V2 sharpen stays 0.223.
+          # 3) V2 Hybrid Enhance: preserve V2 detail path but push the Premium+ look closer.
+          #    Denoise remains light; contrast/saturation moved closer to Premium+; V2 sharpen stays 0.223.
           ffmpeg "${COMMON[@]}" \
-            -vf "$PSCALE,setsar=1,fps=30000/1001,hqdn3d=0.06:0.06:0.24:0.24,unsharp=5:5:0.223:3:3:0.0,eq=contrast=1.006:saturation=1.008$EXTRA" \
+            -vf "$PSCALE,setsar=1,fps=30000/1001,hqdn3d=0.06:0.06:0.24:0.24,unsharp=5:5:0.223:3:3:0.0,eq=contrast=1.009:saturation=1.011$EXTRA" \
             "${V2ENC[@]}" "${AUDIO[@]}" \
             "$OUT/03_V2_Hybrid_Enhance.mp4"
 
@@ -137,11 +136,11 @@ jobs:
           03 V2 Hybrid Enhance
           - hqdn3d 0.06:0.06:0.24:0.24
           - unsharp 5:5:0.223
-          - contrast 1.006
-          - saturation 1.008
+          - contrast 1.009
+          - saturation 1.011
           - x264 fast, 4300k, maxrate 4650k, bufsize 9300k
 
-          Goal: give V2 some Premium+ visual polish without copying Premium+ enhancement at full strength.
+          Goal: move V2 visual polish closer to Premium+ while keeping enhancement lighter than Premium+.
           IMPORTANT: post-WhatsApp scores are unknown until the returned Status files are measured.
           EOF
 
