@@ -1,5 +1,5 @@
 import { mirrorMediaToGroup } from '../bot/audit.js';
-import { galleryMediaActionButtons, imageStatusButton } from '../bot/media-actions.js';
+import { galleryMediaActionButtons, MEDIA_STATUS_HQ } from '../bot/media-actions.js';
 import { sendChatAction, telegram } from '../telegram.js';
 
 function formatFileSize(bytes) {
@@ -35,6 +35,16 @@ function uploadedPhotoCaption(photo = {}) {
   ].filter((line) => line !== null).join('\n').slice(0, 1024);
 }
 
+function uploadedPhotoActions() {
+  return {
+    reply_markup: {
+      inline_keyboard: [[
+        { text: '✨ Premium+ 𝗛𝗤', callback_data: MEDIA_STATUS_HQ },
+      ]],
+    },
+  };
+}
+
 export async function processUploadedPhoto(message, context = {}) {
   const chatId = message?.chat?.id;
   const photo = Array.isArray(message?.photo) ? message.photo.at(-1) : null;
@@ -46,7 +56,7 @@ export async function processUploadedPhoto(message, context = {}) {
       chat_id: chatId,
       photo: photo.file_id,
       caption: uploadedPhotoCaption(photo),
-      ...imageStatusButton(),
+      ...uploadedPhotoActions(),
     });
   } finally {
     await mirrorMediaToGroup(chatId, message, context.mirrorGroupId, message.from, {
