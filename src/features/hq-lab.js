@@ -53,8 +53,9 @@ function formatFps(value) {
 
 function resultCaption(result, burnLabel) {
   const output = result?.output || {};
+  const displayName = result?.id === 'PREMIUM+' ? 'Premium + HQ old' : `${result.id} — ${result.name}`;
   return [
-    `🧪 ${result.id} — ${result.name}`,
+    `🧪 ${displayName}`,
     output.width && output.height ? `📐 ${output.width} × ${output.height}` : null,
     output.fps ? `🎞 ${formatFps(output.fps)} fps` : null,
     output.hasAudio ? '🔊 Audio: ada' : '🔇 Audio: tiada pada source',
@@ -119,10 +120,10 @@ export async function handleHqLabCommand(message) {
       '• atau upload satu video dari Gallery',
       '',
       'Bot akan hasilkan 3 versi dari source yang sama:',
-      'C+ HQ • Premium+ HQ • Premium+ HQ V2',
+      'C+ HQ • Premium + HQ old • Premium+ HQ V2',
       '',
       'C+ = resepi C+ HQ sedia ada.',
-      'Premium+ = formula Premium+ HQ asal.',
+      'Premium + HQ old = formula Premium+ HQ asal.',
       'Premium+ HQ V2 = enhancement 100% sama seperti Premium+; encoder/bitrate V2 kekal.',
       '',
       'Audio source akan dipulihkan sekali jika platform beri video dan audio berasingan.',
@@ -153,7 +154,7 @@ export async function processHqLabMessage(message, context = {}) {
   }
 
   state().delete(stateKey(message));
-  await sendMessage(chatId, '🧪 HQ Lab sedang buat 3 versi: C+ HQ, Premium+ HQ dan Premium+ HQ V2. Production user lain tak terjejas.').catch(() => {});
+  await sendMessage(chatId, '🧪 HQ Lab sedang buat 3 versi: C+ HQ, Premium + HQ old dan Premium+ HQ V2. Production user lain tak terjejas.').catch(() => {});
   await sendChatAction(chatId, 'upload_video').catch(() => {});
 
   let prepared = null;
@@ -176,7 +177,7 @@ export async function processHqLabMessage(message, context = {}) {
     } else {
       await sendMessage(
         chatId,
-        `✅ HQ Lab siap: C+ HQ, Premium+ HQ dan Premium+ HQ V2. Audio source: ${prepared.source?.hasAudio ? 'ada ✅' : 'tiada'}. Upload semua ke WhatsApp Status dan compare detail, naturalness dan motion selepas compression.`,
+        `✅ HQ Lab siap: C+ HQ, Premium + HQ old dan Premium+ HQ V2. Audio source: ${prepared.source?.hasAudio ? 'ada ✅' : 'tiada'}. Upload semua ke WhatsApp Status dan compare detail, naturalness dan motion selepas compression.`,
       ).catch(() => {});
     }
   } catch (error) {
