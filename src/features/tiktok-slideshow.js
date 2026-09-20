@@ -10,6 +10,7 @@ import { needsCustomHeaders } from '../bot/media-resolver.js';
 import { mediaActionButtons } from '../bot/media-actions.js';
 import { localMediaLane } from '../bot/job-lanes.js';
 import { mirrorMediaToGroup } from '../bot/audit.js';
+import { startStatusProgress } from '../bot/progress.js';
 import {
   sendChatAction,
   sendMediaGroup,
@@ -123,17 +124,26 @@ async function processSplit(callbackQuery, context) {
 async function processVideo(callbackQuery, context) {
   const chatId = callbackQuery?.message?.chat?.id;
   if (!chatId) return;
-  await telegram('answerCallbackQuery', { callback_query_id: callbackQuery.id, text: 'Sedang bina video dengan ratio asal…' }).catch(() => {});
+  await telegram('answerCallbackQuery', { callback_query_id: callbackQuery.id }).catch(() => {});
   await disableChoiceButtons(callbackQuery);
+
+  const progress = await startStatusProgress(chatId);
   const slideshow = await resolveChoiceSource(callbackQuery);
-  if (!slideshow) return;
+  if (!slideshow) {
+    await progress.remove();
+    return;
+  }
 
   let preparedVideo = null;
   try {
     await sendChatAction(chatId, 'upload_video').catch(() => {});
     preparedVideo = await localMediaLane(() => prepareTikTokSlideshowVideo(slideshow, configuredUploadLimit()));
+    await progress.complete();
+
     const sourceUrl = extractFirstUrl(callbackQuery?.message?.text || '');
     const sent = await sendVideoFileUpload(chatId, preparedVideo.filePath, '', mediaActionButtons(sourceUrl));
+    await progress.remove();
+
     await mirrorMediaToGroup(chatId, sent, context.mirrorGroupId, callbackQuery.from, {
       sourceUrl,
       platform: 'tiktok',
@@ -142,6 +152,7 @@ async function processVideo(callbackQuery, context) {
     });
   } catch (error) {
     console.error('[tiktok-slideshow/video] failed:', error?.code, error?.message);
+    await progress.remove();
     await sendMessage(chatId, '❌ Tak berjaya gabungkan slideshow + audio menjadi video. Cuba semula kemudian.');
   } finally {
     if (preparedVideo?.cleanup) await preparedVideo.cleanup().catch(() => {});
