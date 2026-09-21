@@ -1,10 +1,6 @@
 import { isResetAdmin } from '../recovery.js';
 import { sendMessage, telegram } from '../telegram.js';
-import {
-  hasJoinPromptBeenSent,
-  hasPremiumHqCompleted,
-  markJoinPromptSent,
-} from '../bot/stats.js';
+import { hasPremiumHqCompleted } from '../bot/stats.js';
 
 export const CHANNEL_VERIFY_CALLBACK = 'channel:verify:v1';
 
@@ -71,14 +67,12 @@ export async function sendChannelGatePrompt(chatId) {
 export async function maybePromptChannelAfterSuccess(chatId, userId) {
   if (!chatId || !userId || isResetAdmin(userId)) return false;
   if (!(await hasPremiumHqCompleted(userId))) return false;
-  if (await hasJoinPromptBeenSent(userId)) return false;
 
   const member = await getMembership(userId);
   if (member !== false) return false;
 
   try {
     await sendChannelGatePrompt(chatId);
-    await markJoinPromptSent(userId);
     return true;
   } catch (error) {
     console.warn('[channel-gate] Premium+ HQ prompt failed:', error?.message);
