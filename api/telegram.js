@@ -1,19 +1,9 @@
 import { detectPlatform, extractFirstUrl } from '../src/platform.js';
 import { sendMessage } from '../src/telegram.js';
-import {
-  beginUpdate,
-  captureJobFence,
-  isResetAdmin,
-  resetGlobalFence,
-  resetUserFence,
-} from '../src/recovery.js';
+import { beginUpdate, captureJobFence, isResetAdmin, resetGlobalFence, resetUserFence } from '../src/recovery.js';
 import { commandMenuText, START_TEXT } from '../src/bot/commands.js';
 import { handleConnectCommand, processAuditDelete, setMirrorWebhook } from '../src/bot/audit.js';
-import {
-  MEDIA_LIVE_WALLPAPER,
-  MEDIA_STATUS_HQ,
-  MEDIA_STATUS_HQ_ANDROID,
-} from '../src/bot/media-actions.js';
+import { MEDIA_LIVE_WALLPAPER, MEDIA_STATUS_HQ, MEDIA_STATUS_HQ_ANDROID } from '../src/bot/media-actions.js';
 import { handleTotalUserCommand, recordUsage } from '../src/bot/stats.js';
 import { processStatusProfileMenu } from '../src/features/status-hq-menu.js';
 import { processStatusAndroidButton } from '../src/features/status-hq-android.js';
@@ -24,12 +14,7 @@ import { processStandardDownload } from '../src/features/downloader.js';
 import { handleHqLabCommand, processHqLabMessage } from '../src/features/hq-lab.js';
 import { processTikTokSlideshowChoice, sendTikTokSlideshowChoice } from '../src/features/tiktok-slideshow.js';
 import { handleSupportTestCommand } from '../src/features/support-test.js';
-import {
-  enforceChannelGateForCallback,
-  enforceChannelGateForMessage,
-  maybePromptChannelAfterSuccess,
-  processChannelGateCallback,
-} from '../src/features/channel-gate.js';
+import { enforceChannelGateForCallback, enforceChannelGateForMessage, maybePromptChannelAfterSuccess, processChannelGateCallback } from '../src/features/channel-gate.js';
 
 function json(res, status, body) {
   res.status(status).json(body);
