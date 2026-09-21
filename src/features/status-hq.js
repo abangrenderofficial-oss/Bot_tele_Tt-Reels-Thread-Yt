@@ -46,17 +46,19 @@ export async function processStatusFromLink(chatId, url, platform, fence = null)
     prepared = await localMediaLane(() => prepareStatusFromSourceUrl(url, platform));
     if (cancelled(fence)) {
       await progress.remove();
-      return;
+      return false;
     }
     await progress.complete();
     await sendVideoFileUpload(chatId, prepared.filePath, await statusVideoCaption());
     await progress.remove();
+    return true;
   } catch (error) {
     console.error('[status-hq/link] failed:', error?.code, error?.message);
     await progress.remove();
     if (!cancelled(fence)) {
       await sendMessage(chatId, '❌ Status HQ tak dapat disiapkan untuk link ini. Cuba semula kemudian.').catch(() => {});
     }
+    return false;
   } finally {
     if (prepared?.cleanup) await prepared.cleanup().catch(() => {});
   }
@@ -137,6 +139,7 @@ export async function processStatusButton(callbackQuery, context = {}) {
 
   await sendChatAction(chatId, isImage ? 'upload_document' : 'upload_video').catch(() => {});
   let prepared = null;
+  let premiumVideoCompleted = false;
   const progress = await (isImage ? startImageStatusProgress(chatId) : startStatusProgress(chatId));
   try {
     if (!fileId) throw new Error('Media file_id missing from callback message.');
@@ -154,8 +157,6 @@ export async function processStatusButton(callbackQuery, context = {}) {
       prepared = await localMediaLane(async () => {
         let sourceError = null;
 
-        // For social links, rebuild from the original post first. The resolver can
-        // supply a separate audio track when the highest-quality video stream is silent.
         if (sourceUrl && sourcePlatform) {
           try {
             return await prepareStatusFromSourceUrl(sourceUrl, sourcePlatform);
@@ -179,6 +180,7 @@ export async function processStatusButton(callbackQuery, context = {}) {
       }
       await progress.complete();
       await sendVideoFileUpload(chatId, prepared.filePath, await statusVideoCaption());
+      premiumVideoCompleted = true;
     }
 
     await progress.remove();
@@ -196,5 +198,5 @@ export async function processStatusButton(callbackQuery, context = {}) {
   } finally {
     if (prepared?.cleanup) await prepared.cleanup().catch(() => {});
   }
-  return true;
+  return premiumVideoCompleted ? { premiumVideoCompleted: true } : true;
 }
