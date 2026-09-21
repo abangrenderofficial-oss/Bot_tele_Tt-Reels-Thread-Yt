@@ -39,7 +39,7 @@ function baseUrl() {
 function normalizeAmount(value) {
   const amount = Number(value);
   if (!Number.isFinite(amount) || amount <= 0) {
-    const error = new Error('Invalid donation amount.');
+    const error = new Error('Invalid support amount.');
     error.code = 'BAYARCASH_INVALID_AMOUNT';
     throw error;
   }
@@ -66,7 +66,7 @@ function paymentIntentChecksum(secret, data) {
 function orderNumber(userId) {
   const stamp = Date.now().toString(36).toUpperCase();
   const user = String(userId || 'USER').replace(/\D/g, '').slice(-8) || 'USER';
-  return `DON-${user}-${stamp}`.slice(0, 30);
+  return `SUP-${user}-${stamp}`.slice(0, 30);
 }
 
 function payerName(user = {}) {
@@ -103,7 +103,7 @@ export function isBayarcashConfigured() {
   );
 }
 
-export async function createDonationPayment({ amount, user, publicBaseUrl }) {
+export async function createSupportPayment({ amount, user, publicBaseUrl }) {
   const apiToken = requiredEnv('BAYARCASH_API_TOKEN');
   const apiSecret = requiredEnv('BAYARCASH_API_SECRET_KEY');
   const portalKey = requiredEnv('BAYARCASH_PORTAL_KEY');
@@ -134,6 +134,7 @@ export async function createDonationPayment({ amount, user, publicBaseUrl }) {
   if (user?.id) form.set('metadata[telegram_user_id]', String(user.id));
   if (user?.username) form.set('metadata[telegram_username]', String(user.username));
   form.set('metadata[purpose]', 'telegram_bot_support');
+  form.set('metadata[description]', 'Support for Telegram Bot Development & Server Costs');
 
   const response = await fetch(`${baseUrl()}payment-intents`, {
     method: 'POST',
