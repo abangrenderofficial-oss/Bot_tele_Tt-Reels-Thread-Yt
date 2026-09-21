@@ -37,7 +37,7 @@ export async function processLiveWallpaperButton(callbackQuery, context = {}) {
   if (gallery && fileSize > heavyVideoLimitBytes()) {
     await telegram('answerCallbackQuery', {
       callback_query_id: callbackQuery.id,
-      text: '❌ Buat masa ini video Gallery maksimum 500MB.',
+      text: 'Sorry, you can only upload videos up to 150 MB.',
       show_alert: true,
     }).catch(() => {});
     return true;
