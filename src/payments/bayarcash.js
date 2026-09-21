@@ -2,7 +2,6 @@ import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 
 const LIVE_BASE_URL = 'https://api.console.bayar.cash/v3/';
 const SANDBOX_BASE_URL = 'https://api.console.bayarcash-sandbox.com/v3/';
-const DUITNOW_QR_CHANNEL = 6;
 
 const TRANSACTION_CALLBACK_FIELDS = [
   'record_type',
@@ -82,6 +81,11 @@ function payerEmail() {
   throw error;
 }
 
+function paymentChannel() {
+  const raw = String(process.env.BAYARCASH_PAYMENT_CHANNEL || '').trim();
+  return /^\d+$/.test(raw) && Number(raw) > 0 ? raw : '';
+}
+
 function payerPhone() {
   return String(process.env.BAYARCASH_PAYER_PHONE || '').trim();
 }
@@ -113,10 +117,10 @@ export async function createSupportPayment({ amount, user, publicBaseUrl, orderN
   const portalKey = requiredEnv('BAYARCASH_PORTAL_KEY');
   const { callbackUrl, returnUrl } = publicUrls(publicBaseUrl);
   const normalizedAmount = normalizeAmount(amount);
+  const channel = paymentChannel();
 
   const data = {
     portal_key: portalKey,
-    payment_channel: String(DUITNOW_QR_CHANNEL),
     order_number: String(orderNumber || createSupportOrderNumber()).slice(0, 30),
     amount: normalizedAmount,
     payer_name: payerName(user),
@@ -125,6 +129,7 @@ export async function createSupportPayment({ amount, user, publicBaseUrl, orderN
     return_url: returnUrl,
   };
 
+  if (channel) data.payment_channel = channel;
   const phone = payerPhone();
   if (phone) data.payer_telephone_number = phone;
 
