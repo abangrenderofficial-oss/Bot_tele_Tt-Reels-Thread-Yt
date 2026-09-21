@@ -20,7 +20,18 @@ const TRANSACTION_CALLBACK_FIELDS = [
   'datetime',
 ];
 
-function requiredEnv(name) {
+export function isBayarcashSandbox() {
+  return String(process.env.BAYARCASH_SANDBOX || '').trim().toLowerCase() === 'true';
+}
+
+function credentialEnvName(suffix) {
+  return isBayarcashSandbox()
+    ? `BAYARCASH_SANDBOX_${suffix}`
+    : `BAYARCASH_${suffix}`;
+}
+
+function requiredCredential(suffix) {
+  const name = credentialEnvName(suffix);
   const value = String(process.env[name] || '').trim();
   if (!value) {
     const error = new Error(`${name} is not configured.`);
@@ -31,9 +42,7 @@ function requiredEnv(name) {
 }
 
 function baseUrl() {
-  return String(process.env.BAYARCASH_SANDBOX || '').toLowerCase() === 'true'
-    ? SANDBOX_BASE_URL
-    : LIVE_BASE_URL;
+  return isBayarcashSandbox() ? SANDBOX_BASE_URL : LIVE_BASE_URL;
 }
 
 function normalizeAmount(value) {
@@ -66,7 +75,8 @@ function paymentIntentChecksum(secret, data) {
 export function createSupportOrderNumber() {
   const stamp = Date.now().toString(36).toUpperCase();
   const random = randomBytes(5).toString('hex').toUpperCase();
-  return `SUP-${stamp}-${random}`.slice(0, 30);
+  const prefix = isBayarcashSandbox() ? 'TST' : 'SUP';
+  return `${prefix}-${stamp}-${random}`.slice(0, 30);
 }
 
 function payerName(user = {}) {
@@ -75,7 +85,10 @@ function payerName(user = {}) {
 }
 
 function payerEmail() {
-  const configured = String(process.env.BAYARCASH_PAYER_EMAIL || '').trim();
+  const sandboxEmail = isBayarcashSandbox()
+    ? String(process.env.BAYARCASH_SANDBOX_PAYER_EMAIL || '').trim()
+    : '';
+  const configured = sandboxEmail || String(process.env.BAYARCASH_PAYER_EMAIL || '').trim();
   if (configured) return configured;
   const error = new Error('BAYARCASH_PAYER_EMAIL is required for Bayarcash payment intent.');
   error.code = 'BAYARCASH_PAYER_EMAIL_REQUIRED';
@@ -83,12 +96,18 @@ function payerEmail() {
 }
 
 function paymentChannel() {
-  const raw = String(process.env.BAYARCASH_PAYMENT_CHANNEL || DEFAULT_PAYMENT_CHANNEL).trim();
+  const sandboxChannel = isBayarcashSandbox()
+    ? String(process.env.BAYARCASH_SANDBOX_PAYMENT_CHANNEL || '').trim()
+    : '';
+  const raw = sandboxChannel || String(process.env.BAYARCASH_PAYMENT_CHANNEL || DEFAULT_PAYMENT_CHANNEL).trim();
   return /^\d+$/.test(raw) && Number(raw) > 0 ? raw : DEFAULT_PAYMENT_CHANNEL;
 }
 
 function payerPhone() {
-  return String(process.env.BAYARCASH_PAYER_PHONE || '').trim();
+  const sandboxPhone = isBayarcashSandbox()
+    ? String(process.env.BAYARCASH_SANDBOX_PAYER_PHONE || '').trim()
+    : '';
+  return sandboxPhone || String(process.env.BAYARCASH_PAYER_PHONE || '').trim();
 }
 
 function publicUrls(publicBaseUrl) {
@@ -106,16 +125,16 @@ function publicUrls(publicBaseUrl) {
 
 export function isBayarcashConfigured() {
   return Boolean(
-    String(process.env.BAYARCASH_API_TOKEN || '').trim()
-    && String(process.env.BAYARCASH_API_SECRET_KEY || '').trim()
-    && String(process.env.BAYARCASH_PORTAL_KEY || '').trim(),
+    String(process.env[credentialEnvName('API_TOKEN')] || '').trim()
+    && String(process.env[credentialEnvName('API_SECRET_KEY')] || '').trim()
+    && String(process.env[credentialEnvName('PORTAL_KEY')] || '').trim(),
   );
 }
 
 export async function createSupportPayment({ amount, user, publicBaseUrl, orderNumber = '' }) {
-  const apiToken = requiredEnv('BAYARCASH_API_TOKEN');
-  const apiSecret = requiredEnv('BAYARCASH_API_SECRET_KEY');
-  const portalKey = requiredEnv('BAYARCASH_PORTAL_KEY');
+  const apiToken = requiredCredential('API_TOKEN');
+  const apiSecret = requiredCredential('API_SECRET_KEY');
+  const portalKey = requiredCredential('PORTAL_KEY');
   const { callbackUrl, returnUrl } = publicUrls(publicBaseUrl);
   const normalizedAmount = normalizeAmount(amount);
   const channel = paymentChannel();
@@ -179,12 +198,13 @@ export async function createSupportPayment({ amount, user, publicBaseUrl, orderN
     amount: normalizedAmount,
     url: paymentUrl,
     paymentIntentId: body?.id || body?.data?.id || null,
+    sandbox: isBayarcashSandbox(),
     raw: body,
   };
 }
 
 export function verifyTransactionCallback(payload = {}) {
-  const secret = String(process.env.BAYARCASH_API_SECRET_KEY || '').trim();
+  const secret = String(process.env[credentialEnvName('API_SECRET_KEY')] || '').trim();
   const provided = String(payload?.checksum || '').trim();
   if (!secret || !provided) return false;
 
