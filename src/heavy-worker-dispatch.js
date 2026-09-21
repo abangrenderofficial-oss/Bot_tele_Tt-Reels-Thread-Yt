@@ -1,5 +1,5 @@
 const DEFAULT_OWNER = 'abangrenderofficial-oss';
-const DEFAULT_REPO = 'Bot_tele_Tt-Reels-Thread-Yt';
+const DEFAULT_REPO = 'mdab-129';
 const DEFAULT_WORKFLOW = 'heavy-status-hq.yml';
 const MB = 1024 * 1024;
 
@@ -65,7 +65,7 @@ export async function dispatchHeavyMediaJob({
       Accept: 'application/vnd.github+json',
       Authorization: `Bearer ${token}`,
       'X-GitHub-Api-Version': '2022-11-28',
-      'User-Agent': 'AbangRender-Telegram-HeavyWorker/2.0',
+      'User-Agent': 'mdab-129/2.0',
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({

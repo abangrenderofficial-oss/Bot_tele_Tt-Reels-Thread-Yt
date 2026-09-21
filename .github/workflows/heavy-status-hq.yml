@@ -1,4 +1,4 @@
-name: Heavy Media 500MB
+name: m129-a
 
 on:
   workflow_dispatch:
