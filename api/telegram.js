@@ -23,6 +23,7 @@ import { processUploadedPhoto, processUploadedVideo } from '../src/features/uplo
 import { processStandardDownload } from '../src/features/downloader.js';
 import { handleHqLabCommand, processHqLabMessage } from '../src/features/hq-lab.js';
 import { processTikTokSlideshowChoice, sendTikTokSlideshowChoice } from '../src/features/tiktok-slideshow.js';
+import { handleDonationTestCommand } from '../src/features/donation-test.js';
 
 function json(res, status, body) {
   res.status(status).json(body);
@@ -199,6 +200,11 @@ export default async function handler(req, res) {
     if (command === '/totaluser') {
       await handleTotalUserCommand(message, context);
       return json(res, 200, { ok: true, stats: true });
+    }
+
+    if (command === '/donatetest') {
+      await handleDonationTestCommand(message, context);
+      return json(res, 200, { ok: true, donation_test: true });
     }
 
     if (command === '/reset') {
