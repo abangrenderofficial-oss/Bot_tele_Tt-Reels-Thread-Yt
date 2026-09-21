@@ -27,8 +27,9 @@ export async function withJobLane(name, task) {
   }
 }
 
-export function localMediaLane(task) {
-  const userKey = currentUserJobKey();
+export function localMediaLane(task, ownerKey = '') {
+  const explicitKey = String(ownerKey || '').trim();
+  const userKey = explicitKey || currentUserJobKey();
   const lane = userKey
     ? `railway-local-media-heavy:user:${userKey}`
     : 'railway-local-media-heavy:shared';
