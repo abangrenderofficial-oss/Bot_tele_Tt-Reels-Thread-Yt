@@ -24,6 +24,12 @@ import { processStandardDownload } from '../src/features/downloader.js';
 import { handleHqLabCommand, processHqLabMessage } from '../src/features/hq-lab.js';
 import { processTikTokSlideshowChoice, sendTikTokSlideshowChoice } from '../src/features/tiktok-slideshow.js';
 import { handleSupportTestCommand } from '../src/features/support-test.js';
+import {
+  enforceChannelGateForCallback,
+  enforceChannelGateForMessage,
+  maybePromptChannelAfterSuccess,
+  processChannelGateCallback,
+} from '../src/features/channel-gate.js';
 
 function json(res, status, body) {
   res.status(status).json(body);
@@ -62,6 +68,11 @@ function hasDownloadableMedia(result) {
   return Array.isArray(result?.media?.audios) && result.media.audios.length > 0;
 }
 
+async function recordCompletedUse(userId, eventType, chatId) {
+  await recordUsage(userId, eventType);
+  await maybePromptChannelAfterSuccess(chatId, userId);
+}
+
 async function processMessage(message, context) {
   const chatId = message?.chat?.id;
   const userId = message?.from?.id;
@@ -81,6 +92,8 @@ async function processMessage(message, context) {
     await sendMessage(chatId, START_TEXT);
     return;
   }
+
+  if (await enforceChannelGateForMessage(message)) return;
 
   if (await handleHqLabCommand(message, context)) return;
   if (await processHqLabMessage(message, context)) return;
@@ -114,13 +127,16 @@ async function processMessage(message, context) {
 
   if (statusMode) {
     await processStatusFromLink(chatId, url, platform, context.fence);
-    await recordUsage(userId, 'status_hq');
+    await recordCompletedUse(userId, 'status_hq', chatId);
     return;
   }
 
   const result = await processStandardDownload({ chatId, url, platform, context, message });
-  if (result?.slideshow) await sendTikTokSlideshowChoice(chatId, url);
-  if (hasDownloadableMedia(result)) await recordUsage(userId, 'download');
+  if (result?.slideshow) {
+    await sendTikTokSlideshowChoice(chatId, url);
+  } else if (hasDownloadableMedia(result)) {
+    await recordCompletedUse(userId, 'download', chatId);
+  }
 }
 
 async function runWebhookUpdate(update, context) {
@@ -128,22 +144,27 @@ async function runWebhookUpdate(update, context) {
   if (callbackQuery) {
     const action = String(callbackQuery?.data || '');
     const userId = callbackQuery?.from?.id;
+    const chatId = callbackQuery?.message?.chat?.id;
 
+    if (await processChannelGateCallback(callbackQuery)) return;
+    if (await enforceChannelGateForCallback(callbackQuery)) return;
     if (await processAuditDelete(callbackQuery)) return;
     if (await processStatusProfileMenu(callbackQuery, context)) return;
     if (await processStatusAndroidButton(callbackQuery, context)) {
-      if (action.startsWith(MEDIA_STATUS_HQ_ANDROID)) await recordUsage(userId, 'status_hq');
+      if (action.startsWith(MEDIA_STATUS_HQ_ANDROID)) await recordCompletedUse(userId, 'status_hq', chatId);
       return;
     }
     if (await processStatusButton(callbackQuery, context)) {
-      if (action.startsWith(MEDIA_STATUS_HQ)) await recordUsage(userId, 'status_hq');
+      if (action.startsWith(MEDIA_STATUS_HQ)) await recordCompletedUse(userId, 'status_hq', chatId);
       return;
     }
     if (await processLiveWallpaperButton(callbackQuery, context)) {
-      if (action.startsWith(MEDIA_LIVE_WALLPAPER)) await recordUsage(userId, 'live_wallpaper');
+      if (action.startsWith(MEDIA_LIVE_WALLPAPER)) await recordCompletedUse(userId, 'live_wallpaper', chatId);
       return;
     }
-    await processTikTokSlideshowChoice(callbackQuery, context);
+    if (await processTikTokSlideshowChoice(callbackQuery, context)) {
+      await recordCompletedUse(userId, 'download', chatId);
+    }
     return;
   }
 
