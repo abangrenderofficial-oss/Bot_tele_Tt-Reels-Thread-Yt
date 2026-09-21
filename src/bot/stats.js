@@ -5,6 +5,7 @@ import { sendMessage, telegram } from '../telegram.js';
 const EVENT_TYPES = new Set(['download', 'status_hq', 'live_wallpaper']);
 const STATS_FILE = String(process.env.STATS_FILE_PATH || '/data/bot-stats.json');
 const STATS_VERSION = 1;
+export const PREMIUM_HQ_CHANNEL_GATE_THRESHOLD = 5;
 
 let statePromise = null;
 let writeQueue = Promise.resolve();
@@ -78,18 +79,28 @@ function monthKey(date = new Date()) {
   return `${year}-${month}`;
 }
 
+function legacyPremiumHqCount(old = {}) {
+  const stored = Number(old?.premiumHqCompletedCount);
+  if (Number.isSafeInteger(stored) && stored >= 0) return stored;
+  // Before the counter existed, premiumHqCompleted only meant the user had
+  // successfully completed Premium+ HQ at least once. Preserve that as 1 use.
+  return old?.premiumHqCompleted ? 1 : 0;
+}
+
 function touchUser(state, userId, now = new Date()) {
   const key = validUserKey(userId);
   if (!key) return null;
   const iso = now.toISOString();
   const old = state.users[key] && typeof state.users[key] === 'object' ? state.users[key] : {};
+  const premiumHqCompletedCount = legacyPremiumHqCount(old);
   const user = {
     firstSeen: old.firstSeen || iso,
     lastSeen: iso,
     statusHq: Boolean(old.statusHq),
     liveWallpaper: Boolean(old.liveWallpaper),
     completedUse: Boolean(old.completedUse || old.statusHq || old.liveWallpaper),
-    premiumHqCompleted: Boolean(old.premiumHqCompleted),
+    premiumHqCompletedCount,
+    premiumHqCompleted: premiumHqCompletedCount >= PREMIUM_HQ_CHANNEL_GATE_THRESHOLD,
     joinPromptSent: Boolean(old.joinPromptSent),
   };
   state.users[key] = user;
@@ -134,17 +145,23 @@ export async function markPremiumHqCompleted(userId) {
   if (!key) return false;
   await mutate((state) => {
     const user = touchUser(state, userId, new Date());
-    if (user) user.premiumHqCompleted = true;
+    if (!user) return;
+    user.premiumHqCompletedCount = Math.max(0, Number(user.premiumHqCompletedCount || 0)) + 1;
+    user.premiumHqCompleted = user.premiumHqCompletedCount >= PREMIUM_HQ_CHANNEL_GATE_THRESHOLD;
   });
   return true;
 }
 
-export async function hasPremiumHqCompleted(userId) {
+export async function getPremiumHqCompletedCount(userId) {
   const key = validUserKey(userId);
-  if (!key) return false;
+  if (!key) return 0;
   await writeQueue;
   const state = await loadState();
-  return Boolean(state.users?.[key]?.premiumHqCompleted);
+  return legacyPremiumHqCount(state.users?.[key] || {});
+}
+
+export async function hasPremiumHqCompleted(userId) {
+  return (await getPremiumHqCompletedCount(userId)) >= PREMIUM_HQ_CHANNEL_GATE_THRESHOLD;
 }
 
 export async function hasJoinPromptBeenSent(userId) {
