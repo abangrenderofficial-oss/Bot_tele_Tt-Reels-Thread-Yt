@@ -43,7 +43,7 @@ export async function processStatusFromLink(chatId, url, platform, fence = null)
   const progress = await startStatusProgress(chatId);
   try {
     await sendChatAction(chatId, 'upload_video').catch(() => {});
-    prepared = await localMediaLane(() => prepareStatusFromSourceUrl(url, platform));
+    prepared = await localMediaLane(() => prepareStatusFromSourceUrl(url, platform), chatId);
     if (cancelled(fence)) {
       await progress.remove();
       return false;
@@ -146,7 +146,7 @@ export async function processStatusButton(callbackQuery, context = {}) {
 
     if (isImage) {
       const telegramImage = await getTelegramFileSource(fileId);
-      prepared = await localMediaLane(() => prepareWhatsAppStatusImageHQ({ image: telegramImage }));
+      prepared = await localMediaLane(() => prepareWhatsAppStatusImageHQ({ image: telegramImage }), chatId);
       if (cancelled(fence)) {
         await progress.remove();
         return true;
@@ -173,7 +173,7 @@ export async function processStatusButton(callbackQuery, context = {}) {
           if (sourceError) throw sourceError;
           throw telegramError;
         }
-      });
+      }, chatId);
       if (cancelled(fence)) {
         await progress.remove();
         return true;
