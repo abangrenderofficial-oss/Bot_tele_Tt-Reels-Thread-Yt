@@ -7,14 +7,14 @@ import { MEDIA_LIVE_WALLPAPER, MEDIA_STATUS_HQ, MEDIA_STATUS_HQ_ANDROID } from '
 import { handleTotalUserCommand, markPremiumHqCompleted, recordUsage } from '../src/bot/stats.js';
 import { processStatusProfileMenu } from '../src/features/status-hq-menu.js';
 import { processStatusAndroidButton } from '../src/features/status-hq-android.js';
-import { processStatusButton, processStatusFromLink } from '../src/features/status-hq.js';
+import { processStatusButton } from '../src/features/status-hq.js';
 import { processLiveWallpaperButton } from '../src/features/live-wallpaper.js';
 import { processUploadedPhoto, processUploadedVideo } from '../src/features/uploaded-media.js';
-import { processStandardDownload } from '../src/features/downloader.js';
 import { handleHqLabCommand, processHqLabMessage } from '../src/features/hq-lab.js';
-import { processTikTokSlideshowChoice, sendTikTokSlideshowChoice } from '../src/features/tiktok-slideshow.js';
+import { processTikTokSlideshowChoice } from '../src/features/tiktok-slideshow.js';
 import { handleSupportTestCommand } from '../src/features/support-test.js';
 import { enforceChannelGateForCallback, enforceChannelGateForMessage, maybePromptChannelAfterSuccess, processChannelGateCallback } from '../src/features/channel-gate.js';
+import { scheduleLinkJob } from '../src/features/link-queue.js';
 
 function json(res, status, body) { res.status(status).json(body); }
 
@@ -42,13 +42,6 @@ function commandFromMessage(message) {
   return (text.split(/\s+/)[0]?.toLowerCase() || '').split('@')[0];
 }
 
-function hasDownloadableMedia(result) {
-  if (!result || result.cancelled) return false;
-  if (result.slideshow || result.sentVideo) return true;
-  if (Array.isArray(result?.media?.images) && result.media.images.length) return true;
-  return Array.isArray(result?.media?.audios) && result.media.audios.length > 0;
-}
-
 async function recordPremiumHqSuccess(userId, chatId) {
   await recordUsage(userId, 'status_hq');
   await markPremiumHqCompleted(userId);
@@ -57,7 +50,6 @@ async function recordPremiumHqSuccess(userId, chatId) {
 
 async function processMessage(message, context) {
   const chatId = message?.chat?.id;
-  const userId = message?.from?.id;
   const text = message?.text || message?.caption || '';
   if (!chatId) return;
 
@@ -87,15 +79,7 @@ async function processMessage(message, context) {
     return;
   }
 
-  if (statusMode) {
-    const completed = await processStatusFromLink(chatId, url, platform, context.fence);
-    if (completed) await recordPremiumHqSuccess(userId, chatId);
-    return;
-  }
-
-  const result = await processStandardDownload({ chatId, url, platform, context, message });
-  if (result?.slideshow) await sendTikTokSlideshowChoice(chatId, url);
-  else if (hasDownloadableMedia(result)) await recordUsage(userId, 'download');
+  await scheduleLinkJob({ message, context, url, platform, statusMode });
 }
 
 async function runWebhookUpdate(update, context) {
