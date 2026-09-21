@@ -117,6 +117,8 @@ function cleanUsername(value) {
 
 export function supportTier(totalValue) {
   const total = Number(totalValue || 0);
+  if (total >= 100) return { key: 'ultimate', label: '🏆 Ultimate Supporter' };
+  if (total >= 50) return { key: 'diamond', label: '💎 Diamond Supporter' };
   if (total >= 30) return { key: 'vip', label: '👑 VIP Supporter' };
   if (total >= 20) return { key: 'premium', label: '❤️ Premium Supporter' };
   if (total >= 10) return { key: 'supporter', label: '☕ Supporter' };
