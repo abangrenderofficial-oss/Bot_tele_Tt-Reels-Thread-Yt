@@ -1,8 +1,8 @@
 import { isResetAdmin } from '../recovery.js';
 import { sendMessage, telegram } from '../telegram.js';
 import {
-  hasCompletedUse,
   hasJoinPromptBeenSent,
+  hasPremiumHqCompleted,
   markJoinPromptSent,
 } from '../bot/stats.js';
 
@@ -37,8 +37,6 @@ async function getMembership(userId) {
     });
     return membershipAllowed(member);
   } catch (error) {
-    // Fail open if Telegram has a temporary membership-check issue. This avoids
-    // unrelated downloader outages while still enforcing the gate normally.
     console.warn('[channel-gate] getChatMember failed:', error?.message);
     return null;
   }
@@ -49,17 +47,20 @@ export async function sendChannelGatePrompt(chatId) {
   await sendMessage(
     chatId,
     [
-      '📢 Join Our Official Channel',
+      '📢 Join Official Channel Kita 🇲🇾',
       '',
-      `Your first free process is complete. Join ${channelUsername()} to continue using the bot.`,
+      'Hai, video Premium+ HQ dah siap! 🥳',
+      `Boleh tolong join ${channelUsername()}, channel kita dulu?`,
       '',
-      'Get bot updates, new features and announcements there.',
+      'Thank you banyak-banyak atas support korang yang tak berbelah bahagi! 🥹❤️',
+      '',
+      'Apa-apa update bot, features baru dan announcement, semua kita share dekat channel kita.',
     ].join('\n'),
     {
       reply_markup: {
         inline_keyboard: [
-          [{ text: '📢 Join Channel', url: channelUrl() }],
-          [{ text: "I've Joined ✅", callback_data: CHANNEL_VERIFY_CALLBACK }],
+          [{ text: '📢 Join Channel Kita', url: channelUrl() }],
+          [{ text: 'Dah Join ✅', callback_data: CHANNEL_VERIFY_CALLBACK }],
         ],
       },
     },
@@ -69,6 +70,7 @@ export async function sendChannelGatePrompt(chatId) {
 
 export async function maybePromptChannelAfterSuccess(chatId, userId) {
   if (!chatId || !userId || isResetAdmin(userId)) return false;
+  if (!(await hasPremiumHqCompleted(userId))) return false;
   if (await hasJoinPromptBeenSent(userId)) return false;
 
   const member = await getMembership(userId);
@@ -79,7 +81,7 @@ export async function maybePromptChannelAfterSuccess(chatId, userId) {
     await markJoinPromptSent(userId);
     return true;
   } catch (error) {
-    console.warn('[channel-gate] first-use prompt failed:', error?.message);
+    console.warn('[channel-gate] Premium+ HQ prompt failed:', error?.message);
     return false;
   }
 }
@@ -89,7 +91,7 @@ export async function enforceChannelGateForMessage(message = {}) {
   const userId = message?.from?.id;
   const chatType = message?.chat?.type;
   if (!chatId || !userId || chatType !== 'private' || isResetAdmin(userId)) return false;
-  if (!(await hasCompletedUse(userId))) return false;
+  if (!(await hasPremiumHqCompleted(userId))) return false;
 
   const member = await getMembership(userId);
   if (member !== false) return false;
@@ -105,14 +107,14 @@ export async function enforceChannelGateForCallback(callbackQuery = {}) {
   const chatType = callbackQuery?.message?.chat?.type;
   const userId = callbackQuery?.from?.id;
   if (!chatId || !userId || chatType !== 'private' || isResetAdmin(userId)) return false;
-  if (!(await hasCompletedUse(userId))) return false;
+  if (!(await hasPremiumHqCompleted(userId))) return false;
 
   const member = await getMembership(userId);
   if (member !== false) return false;
 
   await telegram('answerCallbackQuery', {
     callback_query_id: callbackQuery.id,
-    text: 'Join the official channel to continue.',
+    text: 'Join channel kita dulu ya 😊',
     show_alert: false,
   }).catch(() => {});
   await sendChannelGatePrompt(chatId).catch((error) => {
@@ -132,17 +134,17 @@ export async function processChannelGateCallback(callbackQuery = {}) {
   if (member === true) {
     await telegram('answerCallbackQuery', {
       callback_query_id: callbackQuery.id,
-      text: 'Verified ✅',
+      text: 'Dah verify ✅',
       show_alert: false,
     }).catch(() => {});
 
     await telegram('editMessageText', {
       chat_id: chatId,
       message_id: callbackQuery.message.message_id,
-      text: `✅ Access unlocked.\n\nThanks for joining ${channelUsername()}. You can continue using the bot.`,
+      text: `✅ Dah settle! Terima kasih join ${channelUsername()} 🥹❤️\n\nBoleh terus guna bot macam biasa.`,
       disable_web_page_preview: true,
     }).catch(async () => {
-      await sendMessage(chatId, '✅ Channel membership verified. You can continue using the bot.').catch(() => {});
+      await sendMessage(chatId, '✅ Dah verify! Boleh terus guna bot macam biasa.').catch(() => {});
     });
     return true;
   }
@@ -150,7 +152,7 @@ export async function processChannelGateCallback(callbackQuery = {}) {
   if (member === false) {
     await telegram('answerCallbackQuery', {
       callback_query_id: callbackQuery.id,
-      text: `I still can't verify your membership in ${channelUsername()}. Join first, then tap again.`,
+      text: `Belum nampak lagi 😅 Join ${channelUsername()} dulu, lepas tu tekan “Dah Join ✅” sekali lagi.`,
       show_alert: true,
     }).catch(() => {});
     return true;
@@ -158,7 +160,7 @@ export async function processChannelGateCallback(callbackQuery = {}) {
 
   await telegram('answerCallbackQuery', {
     callback_query_id: callbackQuery.id,
-    text: 'Telegram could not verify membership right now. Please try again shortly.',
+    text: 'Telegram tengah tak dapat verify sekarang. Cuba lagi kejap ya.',
     show_alert: true,
   }).catch(() => {});
   return true;
