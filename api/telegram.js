@@ -13,6 +13,7 @@ import { processUploadedPhoto, processUploadedVideo } from '../src/features/uplo
 import { handleHqLabCommand, processHqLabMessage } from '../src/features/hq-lab.js';
 import { processTikTokSlideshowChoice } from '../src/features/tiktok-slideshow.js';
 import { handleSupportTestCommand } from '../src/features/support-test.js';
+import { handleSupportCommand, processSupportCallback } from '../src/features/support.js';
 import { enforceChannelGateForCallback, enforceChannelGateForMessage, maybePromptChannelAfterSuccess, processChannelGateCallback } from '../src/features/channel-gate.js';
 import { scheduleLinkJob } from '../src/link-queue.js';
 
@@ -57,6 +58,7 @@ async function processMessage(message, context) {
   if (command === '/connect') return handleConnectCommand(message, context.baseUrl, false);
   if (command === '/disconnect') return handleConnectCommand(message, context.baseUrl, true);
   if (command === '/start' || command === '/help') return sendMessage(chatId, START_TEXT);
+  if (command === '/support') return handleSupportCommand(message, context);
   if (await enforceChannelGateForMessage(message)) return;
   if (await handleHqLabCommand(message, context)) return;
   if (await processHqLabMessage(message, context)) return;
@@ -90,6 +92,7 @@ async function runWebhookUpdate(update, context) {
     const chatId = callbackQuery?.message?.chat?.id;
 
     if (await processChannelGateCallback(callbackQuery)) return;
+    if (await processSupportCallback(callbackQuery, context)) return;
     if (await enforceChannelGateForCallback(callbackQuery)) return;
     if (await processAuditDelete(callbackQuery)) return;
     if (await processStatusProfileMenu(callbackQuery, context)) return;
