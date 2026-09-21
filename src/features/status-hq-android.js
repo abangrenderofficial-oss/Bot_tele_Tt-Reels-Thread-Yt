@@ -146,7 +146,7 @@ export async function processStatusAndroidButton(callbackQuery, context = {}) {
         if (socialSourceError) throw socialSourceError;
         throw telegramFileError;
       }
-    });
+    }, chatId);
 
     if (cancelled(fence)) {
       await progress.remove();
