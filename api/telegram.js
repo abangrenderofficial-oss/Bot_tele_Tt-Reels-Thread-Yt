@@ -14,7 +14,7 @@ import { handleHqLabCommand, processHqLabMessage } from '../src/features/hq-lab.
 import { processTikTokSlideshowChoice } from '../src/features/tiktok-slideshow.js';
 import { handleSupportTestCommand } from '../src/features/support-test.js';
 import { enforceChannelGateForCallback, enforceChannelGateForMessage, maybePromptChannelAfterSuccess, processChannelGateCallback } from '../src/features/channel-gate.js';
-import { scheduleLinkJob } from '../src/features/link-queue.js';
+import { scheduleLinkJob } from '../src/link-queue.js';
 
 function json(res, status, body) { res.status(status).json(body); }
 
