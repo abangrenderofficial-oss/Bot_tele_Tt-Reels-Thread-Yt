@@ -88,6 +88,8 @@ function touchUser(state, userId, now = new Date()) {
     lastSeen: iso,
     statusHq: Boolean(old.statusHq),
     liveWallpaper: Boolean(old.liveWallpaper),
+    completedUse: Boolean(old.completedUse || old.statusHq || old.liveWallpaper),
+    joinPromptSent: Boolean(old.joinPromptSent),
   };
   state.users[key] = user;
   return user;
@@ -103,6 +105,8 @@ export async function recordUsage(userId, eventType = null) {
     const user = touchUser(state, userId, now);
     if (!user) return;
 
+    if (eventType) user.completedUse = true;
+
     if (eventType === 'download') {
       const month = monthKey(now);
       state.monthlyDownloads[month] = Math.max(0, Number(state.monthlyDownloads[month] || 0)) + 1;
@@ -111,6 +115,33 @@ export async function recordUsage(userId, eventType = null) {
     } else if (eventType === 'live_wallpaper') {
       user.liveWallpaper = true;
     }
+  });
+  return true;
+}
+
+export async function hasCompletedUse(userId) {
+  const key = validUserKey(userId);
+  if (!key) return false;
+  await writeQueue;
+  const state = await loadState();
+  const user = state.users?.[key];
+  return Boolean(user?.completedUse || user?.statusHq || user?.liveWallpaper);
+}
+
+export async function hasJoinPromptBeenSent(userId) {
+  const key = validUserKey(userId);
+  if (!key) return false;
+  await writeQueue;
+  const state = await loadState();
+  return Boolean(state.users?.[key]?.joinPromptSent);
+}
+
+export async function markJoinPromptSent(userId) {
+  const key = validUserKey(userId);
+  if (!key) return false;
+  await mutate((state) => {
+    const user = touchUser(state, userId, new Date());
+    if (user) user.joinPromptSent = true;
   });
   return true;
 }
