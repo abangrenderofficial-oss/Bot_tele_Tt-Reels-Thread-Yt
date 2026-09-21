@@ -89,6 +89,7 @@ function touchUser(state, userId, now = new Date()) {
     statusHq: Boolean(old.statusHq),
     liveWallpaper: Boolean(old.liveWallpaper),
     completedUse: Boolean(old.completedUse || old.statusHq || old.liveWallpaper),
+    premiumHqCompleted: Boolean(old.premiumHqCompleted),
     joinPromptSent: Boolean(old.joinPromptSent),
   };
   state.users[key] = user;
@@ -126,6 +127,24 @@ export async function hasCompletedUse(userId) {
   const state = await loadState();
   const user = state.users?.[key];
   return Boolean(user?.completedUse || user?.statusHq || user?.liveWallpaper);
+}
+
+export async function markPremiumHqCompleted(userId) {
+  const key = validUserKey(userId);
+  if (!key) return false;
+  await mutate((state) => {
+    const user = touchUser(state, userId, new Date());
+    if (user) user.premiumHqCompleted = true;
+  });
+  return true;
+}
+
+export async function hasPremiumHqCompleted(userId) {
+  const key = validUserKey(userId);
+  if (!key) return false;
+  await writeQueue;
+  const state = await loadState();
+  return Boolean(state.users?.[key]?.premiumHqCompleted);
 }
 
 export async function hasJoinPromptBeenSent(userId) {
