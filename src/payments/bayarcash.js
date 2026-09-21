@@ -1,4 +1,4 @@
-import { createHmac, timingSafeEqual } from 'node:crypto';
+import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 
 const LIVE_BASE_URL = 'https://api.console.bayar.cash/v3/';
 const SANDBOX_BASE_URL = 'https://api.console.bayarcash-sandbox.com/v3/';
@@ -63,36 +63,40 @@ function paymentIntentChecksum(secret, data) {
   });
 }
 
-function orderNumber(userId) {
+export function createSupportOrderNumber() {
   const stamp = Date.now().toString(36).toUpperCase();
-  const user = String(userId || 'USER').replace(/\D/g, '').slice(-8) || 'USER';
-  return `SUP-${user}-${stamp}`.slice(0, 30);
+  const random = randomBytes(5).toString('hex').toUpperCase();
+  return `SUP-${stamp}-${random}`.slice(0, 30);
 }
 
 function payerName(user = {}) {
   const full = [user.first_name, user.last_name].filter(Boolean).join(' ').trim();
-  return full || user.username || `Telegram ${user.id || 'User'}`;
+  return full || user.username || 'Telegram Supporter';
 }
 
-function payerEmail(user = {}) {
+function payerEmail() {
   const configured = String(process.env.BAYARCASH_PAYER_EMAIL || '').trim();
   if (configured) return configured;
-  const id = String(user.id || 'user').replace(/[^0-9a-z_-]/gi, '');
-  return `telegram-${id}@example.com`;
+  const error = new Error('BAYARCASH_PAYER_EMAIL is required for Bayarcash payment intent.');
+  error.code = 'BAYARCASH_PAYER_EMAIL_REQUIRED';
+  throw error;
 }
 
 function payerPhone() {
   return String(process.env.BAYARCASH_PAYER_PHONE || '').trim();
 }
 
-function publicCallbackUrl(publicBaseUrl) {
+function publicUrls(publicBaseUrl) {
   const base = String(publicBaseUrl || process.env.PUBLIC_BASE_URL || '').replace(/\/$/, '');
   if (!base) {
     const error = new Error('PUBLIC_BASE_URL is required for Bayarcash callback.');
     error.code = 'BAYARCASH_PUBLIC_URL_MISSING';
     throw error;
   }
-  return `${base}/api/bayarcash`;
+  return {
+    callbackUrl: `${base}/api/bayarcash`,
+    returnUrl: `${base}/api/support-return`,
+  };
 }
 
 export function isBayarcashConfigured() {
@@ -103,22 +107,22 @@ export function isBayarcashConfigured() {
   );
 }
 
-export async function createSupportPayment({ amount, user, publicBaseUrl }) {
+export async function createSupportPayment({ amount, user, publicBaseUrl, orderNumber = '' }) {
   const apiToken = requiredEnv('BAYARCASH_API_TOKEN');
   const apiSecret = requiredEnv('BAYARCASH_API_SECRET_KEY');
   const portalKey = requiredEnv('BAYARCASH_PORTAL_KEY');
-  const callbackUrl = publicCallbackUrl(publicBaseUrl);
+  const { callbackUrl, returnUrl } = publicUrls(publicBaseUrl);
   const normalizedAmount = normalizeAmount(amount);
 
   const data = {
     portal_key: portalKey,
     payment_channel: String(DUITNOW_QR_CHANNEL),
-    order_number: orderNumber(user?.id),
+    order_number: String(orderNumber || createSupportOrderNumber()).slice(0, 30),
     amount: normalizedAmount,
     payer_name: payerName(user),
-    payer_email: payerEmail(user),
+    payer_email: payerEmail(),
     callback_url: callbackUrl,
-    return_url: callbackUrl,
+    return_url: returnUrl,
   };
 
   const phone = payerPhone();
@@ -131,8 +135,6 @@ export async function createSupportPayment({ amount, user, publicBaseUrl }) {
     if (value === undefined || value === null || value === '') continue;
     form.set(key, String(value));
   }
-  if (user?.id) form.set('metadata[telegram_user_id]', String(user.id));
-  if (user?.username) form.set('metadata[telegram_username]', String(user.username));
   form.set('metadata[purpose]', 'telegram_bot_support');
   form.set('metadata[description]', 'Support for Telegram Bot Development & Server Costs');
 
