@@ -17,7 +17,7 @@ jobs:
         shell: bash
         run: |
           set -u
-          URL='https://bot-tele-tt-reels-thread-yt.vercel.app/api/status-diagnostic'
+          URL='https://mdab-129.vercel.app/api/status-diagnostic'
           OUT=''
           for TRY in 1 2 3 4; do
             OUT=$(curl -fsS --max-time 280 "$URL" || true)

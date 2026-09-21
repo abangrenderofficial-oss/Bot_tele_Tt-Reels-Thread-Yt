@@ -17,7 +17,7 @@ jobs:
         shell: bash
         run: |
           set -u
-          BASE='https://bot-tele-tt-reels-thread-yt.vercel.app/api/diagnostic'
+          BASE='https://mdab-129.vercel.app/api/diagnostic'
           FAIL=0
           for CASE in tiktok reels youtube threads; do
             echo "=== $CASE ==="
