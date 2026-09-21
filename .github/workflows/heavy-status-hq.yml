@@ -41,7 +41,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: heavy-media-${{ inputs.action }}-${{ inputs.chat_id }}
+  group: heavy-media-${{ inputs.chat_id }}
   cancel-in-progress: false
 
 jobs:
