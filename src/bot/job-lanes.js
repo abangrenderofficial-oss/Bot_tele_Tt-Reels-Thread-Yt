@@ -1,3 +1,5 @@
+import { currentUserJobKey } from './user-job-queue.js';
+
 const STATE_KEY = Symbol.for('abangrender.downloader.job-lanes.v1');
 
 function state() {
@@ -26,5 +28,9 @@ export async function withJobLane(name, task) {
 }
 
 export function localMediaLane(task) {
-  return withJobLane('railway-local-media-heavy', task);
+  const userKey = currentUserJobKey();
+  const lane = userKey
+    ? `railway-local-media-heavy:user:${userKey}`
+    : 'railway-local-media-heavy:shared';
+  return withJobLane(lane, task);
 }
