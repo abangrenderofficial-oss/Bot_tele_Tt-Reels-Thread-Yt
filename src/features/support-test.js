@@ -1,4 +1,5 @@
-import { createSupportPayment, isBayarcashConfigured } from '../payments/bayarcash.js';
+import { createSupportOrderNumber, createSupportPayment, isBayarcashConfigured } from '../payments/bayarcash.js';
+import { createPendingSupport, markSupportIntentCreated, markSupportIntentFailed } from '../support/store.js';
 import { sendMessage } from '../telegram.js';
 import { isResetAdmin } from '../recovery.js';
 
@@ -23,7 +24,7 @@ export async function handleSupportTestCommand(message, context = {}) {
   if (!isBayarcashConfigured()) {
     await sendMessage(
       chatId,
-      '⚙️ Bayarcash belum lengkap di Railway. Tambah BAYARCASH_API_TOKEN, BAYARCASH_API_SECRET_KEY dan BAYARCASH_PORTAL_KEY dahulu.',
+      '⚙️ Bayarcash belum lengkap di Railway. BAYARCASH_API_TOKEN, BAYARCASH_API_SECRET_KEY dan BAYARCASH_PORTAL_KEY belum aktif.',
     );
     return true;
   }
@@ -34,6 +35,14 @@ export async function handleSupportTestCommand(message, context = {}) {
     return true;
   }
 
+  const orderNumber = createSupportOrderNumber();
+  await createPendingSupport({
+    orderNumber,
+    userId,
+    username: message?.from?.username || '',
+    amount,
+  });
+
   await sendMessage(chatId, `⏳ Creating Bayarcash support payment RM${amount}...`).catch(() => {});
 
   try {
@@ -41,11 +50,13 @@ export async function handleSupportTestCommand(message, context = {}) {
       amount,
       user: message.from,
       publicBaseUrl: context.baseUrl,
+      orderNumber,
     });
+    await markSupportIntentCreated(orderNumber, payment.paymentIntentId);
 
     await sendMessage(
       chatId,
-      `✅ Bayarcash support payment berjaya dibuat.\n\nAmount: RM${payment.amount}\nOrder: ${payment.orderNumber}\n\nTekan button bawah untuk buka payment page. Tak perlu bayar dulu kalau kita cuma nak confirm flow.`,
+      `✅ Bayarcash support payment berjaya dibuat.\n\nAmount: RM${payment.amount}\nSupport ID: ${payment.orderNumber}\n\nTekan button bawah untuk buka payment page. Tak perlu bayar dulu kalau kita cuma nak confirm flow.`,
       {
         reply_markup: {
           inline_keyboard: [[{ text: `❤️ Support RM${amount}`, url: payment.url }]],
@@ -53,6 +64,7 @@ export async function handleSupportTestCommand(message, context = {}) {
       },
     );
   } catch (error) {
+    await markSupportIntentFailed(orderNumber, error?.code || 'UNKNOWN').catch(() => {});
     console.error('[support-test] Bayarcash failed:', error?.code, error?.status, error?.message, error?.details || '');
     await sendMessage(
       chatId,
