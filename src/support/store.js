@@ -1,7 +1,9 @@
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
-const SUPPORT_FILE = String(process.env.SUPPORT_FILE_PATH || '/data/bot-support.json');
+const SANDBOX_MODE = String(process.env.BAYARCASH_SANDBOX || '').trim().toLowerCase() === 'true';
+const DEFAULT_SUPPORT_FILE = SANDBOX_MODE ? '/data/bot-support-sandbox.json' : '/data/bot-support.json';
+const SUPPORT_FILE = String(process.env.SUPPORT_FILE_PATH || DEFAULT_SUPPORT_FILE);
 const VERSION = 1;
 
 let statePromise = null;
@@ -10,6 +12,7 @@ let writeQueue = Promise.resolve();
 function emptyState() {
   return {
     version: VERSION,
+    mode: SANDBOX_MODE ? 'sandbox' : 'production',
     orders: {},
     transactions: {},
     users: {},
@@ -21,6 +24,7 @@ function normalizeState(raw) {
   if (!raw || typeof raw !== 'object') return fallback;
   return {
     version: VERSION,
+    mode: SANDBOX_MODE ? 'sandbox' : 'production',
     orders: raw.orders && typeof raw.orders === 'object' ? raw.orders : {},
     transactions: raw.transactions && typeof raw.transactions === 'object' ? raw.transactions : {},
     users: raw.users && typeof raw.users === 'object' ? raw.users : {},
@@ -96,6 +100,7 @@ export async function createPendingSupport({ orderNumber, userId, username = '',
         telegramUsername: String(username || '').replace(/^@+/, '').slice(0, 64),
         amount: normalized.toFixed(2),
         status: 'CREATING',
+        environment: SANDBOX_MODE ? 'sandbox' : 'production',
         createdAt: now,
         updatedAt: now,
       };
@@ -181,6 +186,7 @@ export async function applyBayarcashTransaction(payload = {}) {
       orderNumber,
       status: gatewayStatus,
       amount: callbackAmount.toFixed(2),
+      environment: SANDBOX_MODE ? 'sandbox' : 'production',
       receivedAt: previousTx?.receivedAt || now,
       updatedAt: now,
     };
@@ -226,6 +232,7 @@ export async function applyBayarcashTransaction(payload = {}) {
     user.totalSupport = total.toFixed(2);
     user.lastSupportAt = now;
     user.telegramUsername = order.telegramUsername || user.telegramUsername || '';
+    user.environment = SANDBOX_MODE ? 'sandbox' : 'production';
     state.users[order.telegramUserId] = user;
 
     return {
