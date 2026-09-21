@@ -88,7 +88,7 @@ export async function processStatusButton(callbackQuery, context = {}) {
   if (gallery && fileSize > heavyVideoLimitBytes()) {
     await telegram('answerCallbackQuery', {
       callback_query_id: callbackQuery.id,
-      text: '❌ Buat masa ini video Gallery maksimum 500MB.',
+      text: 'Sorry, you can only upload videos up to 150 MB.',
       show_alert: true,
     }).catch(() => {});
     return true;
@@ -97,7 +97,7 @@ export async function processStatusButton(callbackQuery, context = {}) {
   if (heavyCandidate && !heavyWorkerConfigured()) {
     await telegram('answerCallbackQuery', {
       callback_query_id: callbackQuery.id,
-      text: '⚠️ Worker 500MB belum aktif sepenuhnya.',
+      text: '⚠️ Large video worker is not available right now.',
       show_alert: true,
     }).catch(() => {});
     return true;
