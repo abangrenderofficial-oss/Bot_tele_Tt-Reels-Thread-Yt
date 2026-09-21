@@ -8,6 +8,7 @@ import setupWebhookHandler from './api/setup-webhook.js';
 import mediaHandler from './api/media.js';
 import diagnosticHandler from './api/diagnostic.js';
 import statusDiagnosticHandler from './api/status-diagnostic.js';
+import bayarcashHandler from './api/bayarcash.js';
 
 const MAX_BODY_BYTES = 5 * 1024 * 1024;
 
@@ -19,6 +20,7 @@ const routes = new Map([
   ['/api/media', mediaHandler],
   ['/api/diagnostic', diagnosticHandler],
   ['/api/status-diagnostic', statusDiagnosticHandler],
+  ['/api/bayarcash', bayarcashHandler],
 ]);
 
 function addResponseHelpers(res) {
