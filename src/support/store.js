@@ -51,15 +51,17 @@ async function persistState(state) {
 
 function mutate(mutator) {
   let result;
-  writeQueue = writeQueue.then(async () => {
-    const state = await loadState();
-    result = mutator(state);
-    await persistState(state);
-  }).catch((error) => {
+  writeQueue = writeQueue
+    .catch(() => {})
+    .then(async () => {
+      const state = await loadState();
+      result = mutator(state);
+      await persistState(state);
+    });
+  return writeQueue.then(() => result).catch((error) => {
     console.error('[support/store] write failed:', error?.message);
     throw error;
   });
-  return writeQueue.then(() => result);
 }
 
 function validUserId(value) {
@@ -165,35 +167,22 @@ export async function applyBayarcashTransaction(payload = {}) {
     const now = new Date().toISOString();
     const txKey = transactionId || `order:${orderNumber}`;
     const previousTx = state.transactions[txKey];
+    const sameCallback = previousTx
+      && String(previousTx.status) === gatewayStatus
+      && String(previousTx.amount) === callbackAmount.toFixed(2);
+
     order.lastGatewayStatus = gatewayStatus;
     order.statusDescription = String(payload?.status_description || '').slice(0, 200);
     order.gatewayTransactionId = transactionId || order.gatewayTransactionId || null;
     order.updatedAt = now;
-
-    if (previousTx?.processed) {
-      const user = state.users[order.telegramUserId] || { totalSupport: '0.00' };
-      const total = amountNumber(user.totalSupport);
-      return {
-        knownOrder: true,
-        becamePaid: false,
-        duplicate: true,
-        paid: Boolean(order.paidAt),
-        orderNumber,
-        transactionId,
-        telegramUserId: order.telegramUserId,
-        amount: expectedAmount.toFixed(2),
-        totalSupport: total.toFixed(2),
-        tier: supportTier(total),
-      };
-    }
 
     state.transactions[txKey] = {
       transactionId: transactionId || null,
       orderNumber,
       status: gatewayStatus,
       amount: callbackAmount.toFixed(2),
-      processed: true,
-      receivedAt: now,
+      receivedAt: previousTx?.receivedAt || now,
+      updatedAt: now,
     };
 
     if (gatewayStatus !== '3') {
@@ -201,7 +190,8 @@ export async function applyBayarcashTransaction(payload = {}) {
       return {
         knownOrder: true,
         becamePaid: false,
-        paid: false,
+        duplicate: Boolean(sameCallback),
+        paid: Boolean(order.paidAt),
         orderNumber,
         transactionId,
         telegramUserId: order.telegramUserId,
@@ -210,6 +200,8 @@ export async function applyBayarcashTransaction(payload = {}) {
     }
 
     if (order.paidAt) {
+      const user = state.users[order.telegramUserId] || { totalSupport: '0.00' };
+      const total = amountNumber(user.totalSupport);
       return {
         knownOrder: true,
         becamePaid: false,
@@ -219,6 +211,8 @@ export async function applyBayarcashTransaction(payload = {}) {
         transactionId,
         telegramUserId: order.telegramUserId,
         amount: expectedAmount.toFixed(2),
+        totalSupport: total.toFixed(2),
+        tier: supportTier(total),
       };
     }
 
@@ -251,7 +245,7 @@ export async function applyBayarcashTransaction(payload = {}) {
 export async function getSupportProfile(userId) {
   const key = validUserId(userId);
   if (!key) return { totalSupport: '0.00', tier: supportTier(0) };
-  await writeQueue;
+  await writeQueue.catch(() => {});
   const state = await loadState();
   const user = state.users?.[key] || {};
   const total = amountNumber(user.totalSupport);
