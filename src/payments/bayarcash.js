@@ -2,6 +2,7 @@ import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 
 const LIVE_BASE_URL = 'https://api.console.bayar.cash/v3/';
 const SANDBOX_BASE_URL = 'https://api.console.bayarcash-sandbox.com/v3/';
+const DEFAULT_PAYMENT_CHANNEL = '1'; // FPX Online Banking
 
 const TRANSACTION_CALLBACK_FIELDS = [
   'record_type',
@@ -82,8 +83,8 @@ function payerEmail() {
 }
 
 function paymentChannel() {
-  const raw = String(process.env.BAYARCASH_PAYMENT_CHANNEL || '').trim();
-  return /^\d+$/.test(raw) && Number(raw) > 0 ? raw : '';
+  const raw = String(process.env.BAYARCASH_PAYMENT_CHANNEL || DEFAULT_PAYMENT_CHANNEL).trim();
+  return /^\d+$/.test(raw) && Number(raw) > 0 ? raw : DEFAULT_PAYMENT_CHANNEL;
 }
 
 function payerPhone() {
@@ -121,6 +122,7 @@ export async function createSupportPayment({ amount, user, publicBaseUrl, orderN
 
   const data = {
     portal_key: portalKey,
+    payment_channel: channel,
     order_number: String(orderNumber || createSupportOrderNumber()).slice(0, 30),
     amount: normalizedAmount,
     payer_name: payerName(user),
@@ -129,7 +131,6 @@ export async function createSupportPayment({ amount, user, publicBaseUrl, orderN
     return_url: returnUrl,
   };
 
-  if (channel) data.payment_channel = channel;
   const phone = payerPhone();
   if (phone) data.payer_telephone_number = phone;
 
@@ -140,8 +141,6 @@ export async function createSupportPayment({ amount, user, publicBaseUrl, orderN
     if (value === undefined || value === null || value === '') continue;
     form.set(key, String(value));
   }
-  form.set('metadata[purpose]', 'telegram_bot_support');
-  form.set('metadata[description]', 'Support for Telegram Bot Development & Server Costs');
 
   const response = await fetch(`${baseUrl()}payment-intents`, {
     method: 'POST',
