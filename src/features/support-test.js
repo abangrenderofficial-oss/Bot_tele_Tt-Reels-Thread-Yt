@@ -3,11 +3,13 @@ import { createPendingSupport, markSupportIntentCreated, markSupportIntentFailed
 import { sendMessage } from '../telegram.js';
 import { isResetAdmin } from '../recovery.js';
 
+const SUPPORT_AMOUNTS = [10, 20, 30, 50, 100];
+
 function commandAmount(message = {}) {
   const text = String(message?.text || '').trim();
   const [, raw] = text.split(/\s+/);
   const amount = Number(raw || 10);
-  if (![10, 20, 30].includes(amount)) return null;
+  if (!SUPPORT_AMOUNTS.includes(amount)) return null;
   return amount;
 }
 
@@ -37,7 +39,7 @@ export async function handleSupportTestCommand(message, context = {}) {
 
   const amount = commandAmount(message);
   if (!amount) {
-    await sendMessage(chatId, 'Guna: /supporttest 10\nPilihan test: RM10, RM20 atau RM30.');
+    await sendMessage(chatId, 'Guna: /supporttest 10\nPilihan test: RM10, RM20, RM30, RM50 atau RM100.');
     return true;
   }
 
