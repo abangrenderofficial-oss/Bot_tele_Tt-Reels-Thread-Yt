@@ -1,4 +1,4 @@
-import { verifyTransactionCallback } from '../src/payments/bayarcash.js';
+import { isBayarcashConfigured, isBayarcashSandbox, verifyTransactionCallback } from '../src/payments/bayarcash.js';
 import { applyBayarcashTransaction } from '../src/support/store.js';
 import { sendMessage } from '../src/telegram.js';
 
@@ -7,13 +7,18 @@ function json(res, status, body) {
 }
 
 function confirmationText(result) {
-  const lines = [
+  const sandbox = isBayarcashSandbox();
+  const lines = [];
+  if (sandbox) lines.push('🧪 SANDBOX TEST', '');
+  lines.push(
     `❤️ Support diterima — RM${result.amount}`,
     '',
-    'Terima kasih banyak-banyak sebab support bot kita 🥹❤️',
+    sandbox
+      ? 'Payment test berjaya direkodkan. Tiada duit sebenar digunakan.'
+      : 'Terima kasih banyak-banyak sebab support bot kita 🥹❤️',
     `Support ID: ${result.orderNumber}`,
     `Jumlah support: RM${result.totalSupport}`,
-  ];
+  );
   if (result?.tier?.label) lines.push(`Status: ${result.tier.label}`);
   return lines.join('\n');
 }
@@ -23,11 +28,8 @@ export default async function handler(req, res) {
     return json(res, 200, {
       ok: true,
       service: 'bayarcash-callback',
-      configured: Boolean(
-        process.env.BAYARCASH_API_TOKEN
-        && process.env.BAYARCASH_API_SECRET_KEY
-        && process.env.BAYARCASH_PORTAL_KEY,
-      ),
+      environment: isBayarcashSandbox() ? 'sandbox' : 'production',
+      configured: isBayarcashConfigured(),
     });
   }
 
@@ -41,6 +43,7 @@ export default async function handler(req, res) {
 
   if (!valid) {
     console.warn('[bayarcash] rejected callback with invalid checksum', {
+      environment: isBayarcashSandbox() ? 'sandbox' : 'production',
       order_number: payload?.order_number || null,
       status: payload?.status || null,
     });
@@ -49,6 +52,7 @@ export default async function handler(req, res) {
 
   const result = await applyBayarcashTransaction(payload);
   console.log('[bayarcash] verified support callback', {
+    environment: isBayarcashSandbox() ? 'sandbox' : 'production',
     order_number: payload?.order_number || null,
     transaction_id: payload?.transaction_id || null,
     amount: payload?.amount || null,
