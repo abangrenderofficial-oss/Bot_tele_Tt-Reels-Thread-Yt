@@ -67,6 +67,11 @@ function baseUrl() {
   return isBayarcashSandbox() ? SANDBOX_BASE_URL : LIVE_BASE_URL;
 }
 
+function timeoutMs() {
+  const configured = Number(process.env.BAYARCASH_TIMEOUT_MS || 30000);
+  return Number.isFinite(configured) && configured > 0 ? Math.floor(configured) : 30000;
+}
+
 function normalizeAmount(value) {
   const amount = Number(value);
   if (!Number.isFinite(amount) || amount <= 0) {
@@ -159,26 +164,16 @@ export function isBayarcashConfigured() {
   );
 }
 
-async function postPaymentIntent({ apiToken, data }) {
-  const form = new URLSearchParams();
-  for (const [key, value] of Object.entries(data)) {
-    if (value === undefined || value === null || value === '') continue;
-    if (Array.isArray(value)) {
-      for (const item of value) form.append(`${key}[]`, String(item));
-    } else {
-      form.set(key, String(value));
-    }
-  }
-
-  const response = await fetch(`${baseUrl()}payment-intents`, {
-    method: 'POST',
+async function bayarcashJsonRequest({ apiToken, path, method = 'GET', data = null, errorCode = 'BAYARCASH_API_FAILED' }) {
+  const response = await fetch(`${baseUrl()}${path}`, {
+    method,
     headers: {
       Authorization: `Bearer ${apiToken}`,
       Accept: 'application/json',
-      'Content-Type': 'application/x-www-form-urlencoded',
+      'Content-Type': 'application/json',
     },
-    body: form.toString(),
-    signal: AbortSignal.timeout(Number(process.env.BAYARCASH_TIMEOUT_MS || 30000)),
+    body: data === null ? undefined : JSON.stringify(data),
+    signal: AbortSignal.timeout(timeoutMs()),
   });
 
   const raw = await response.text();
@@ -187,12 +182,64 @@ async function postPaymentIntent({ apiToken, data }) {
 
   if (!response.ok) {
     const message = body?.message || body?.error || raw || `Bayarcash HTTP ${response.status}`;
-    const error = new Error(String(message));
-    error.code = 'BAYARCASH_PAYMENT_INTENT_FAILED';
+    const error = new Error(typeof message === 'string' ? message : JSON.stringify(message));
+    error.code = errorCode;
     error.status = response.status;
     error.details = body || raw;
     throw error;
   }
+
+  return body;
+}
+
+export async function getBayarcashPortalDiagnostic() {
+  const apiToken = requiredCredential('API_TOKEN');
+  const portalKey = requiredCredential('PORTAL_KEY');
+  const body = await bayarcashJsonRequest({
+    apiToken,
+    path: 'portals',
+    errorCode: 'BAYARCASH_PORTAL_LOOKUP_FAILED',
+  });
+
+  const portals = Array.isArray(body?.data) ? body.data : (Array.isArray(body) ? body : []);
+  const portal = portals.find((item) => String(item?.portal_key || '') === portalKey);
+  if (!portal) {
+    const error = new Error('Configured Bayarcash portal key was not found for this API token.');
+    error.code = 'BAYARCASH_PORTAL_NOT_FOUND';
+    error.details = { portalCount: portals.length };
+    throw error;
+  }
+
+  const paymentChannels = Array.isArray(portal?.payment_channels)
+    ? portal.payment_channels
+      .map((channel) => {
+        const id = Number(channel?.id || 0);
+        if (!Number.isSafeInteger(id) || id <= 0) return null;
+        return {
+          id,
+          code: String(channel?.code || '').trim(),
+          name: String(channel?.name || PAYMENT_CHANNEL_LABELS[id] || `Channel ${id}`).trim(),
+          label: PAYMENT_CHANNEL_LABELS[id] || String(channel?.name || `Channel ${id}`).trim(),
+        };
+      })
+      .filter(Boolean)
+    : [];
+
+  return {
+    sandbox: isBayarcashSandbox(),
+    portalName: String(portal?.portal_name || 'Bayarcash Portal'),
+    paymentChannels,
+  };
+}
+
+async function postPaymentIntent({ apiToken, data }) {
+  const body = await bayarcashJsonRequest({
+    apiToken,
+    path: 'payment-intents',
+    method: 'POST',
+    data,
+    errorCode: 'BAYARCASH_PAYMENT_INTENT_FAILED',
+  });
 
   const paymentUrl = body?.url || body?.data?.url;
   if (!paymentUrl) {
@@ -205,18 +252,24 @@ async function postPaymentIntent({ apiToken, data }) {
   return { body, paymentUrl };
 }
 
-export async function createSupportPayment({ amount, user, publicBaseUrl, orderNumber = '' }) {
+export async function createSupportPayment({
+  amount,
+  user,
+  publicBaseUrl,
+  orderNumber = '',
+  paymentChannel = null,
+}) {
   const apiToken = requiredCredential('API_TOKEN');
   const apiSecret = requiredCredential('API_SECRET_KEY');
   const portalKey = requiredCredential('PORTAL_KEY');
   const { callbackUrl, returnUrl } = publicUrls(publicBaseUrl);
   const normalizedAmount = normalizeAmount(amount);
   const finalOrderNumber = String(orderNumber || createSupportOrderNumber()).slice(0, 30);
-  const forcedChannel = explicitPaymentChannel();
+  const requestedChannel = Number(paymentChannel || 0);
+  const forcedChannel = Number.isSafeInteger(requestedChannel) && requestedChannel > 0
+    ? requestedChannel
+    : explicitPaymentChannel();
 
-  // Bayarcash v3 allows payment_channel to be omitted. In that mode the hosted
-  // checkout page lets the payer choose from the channels actually available
-  // on the portal. This is the safest default for both Sandbox and Production.
   const data = {
     portal_key: portalKey,
     order_number: finalOrderNumber,
