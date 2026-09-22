@@ -1,19 +1,11 @@
 import { createSupportOrderNumber, createSupportPayment, isBayarcashConfigured } from '../payments/bayarcash.js';
 import { createPendingSupport, markSupportIntentCreated, markSupportIntentFailed } from '../support/store.js';
-import {
-  cancelSupportSubmission,
-  createSupportSubmission,
-  getActiveSupportSubmission,
-  markSupportSubmissionCheckout,
-  setSupportSubmissionMessage,
-  setSupportSubmissionName,
-} from '../support/submissions.js';
+import { createSupportSubmission, markSupportSubmissionCheckout } from '../support/submissions.js';
 import { sendMessage, telegram } from '../telegram.js';
 
 const SUPPORT_SELECT_PREFIX = 'support:select:';
 const SUPPORT_AMOUNTS_ACTION = 'support:amounts';
 const SUPPORT_BACK_ACTION = 'support:back';
-const SUPPORT_CANCEL_PREFIX = 'support:cancel:';
 const SUPPORT_AMOUNTS = new Set([10, 20, 30, 50, 100]);
 
 const SUPPORT_TIERS = new Map([
@@ -42,7 +34,7 @@ function supportMenuText() {
     '',
     'Tapi sayang, bot ni untuk kekal hidup kita kena bayarkan kos sewa server utk dia. Jom kita saling membantu hidupkan bot ni nak? Sekali seumur hidup pun tak apa. Terima kasih orang baik !🤍',
     '',
-    'Korang boleh pilih amount yg korang mampu and tinggalkan kata2 support 🙇🏻',
+    'Korang boleh pilih amount yg korang mampu 🙇🏻',
     ...(!isBayarcashConfigured() ? ['', '⚙️ Payment gateway tengah disediakan. Cuba lagi kejap nanti.'] : []),
   ].join('\n');
 }
@@ -62,14 +54,6 @@ function supportMenuKeyboard() {
       [{ text: '↩️ Back', callback_data: SUPPORT_BACK_ACTION }],
     ],
   };
-}
-
-function containsLink(text = '') {
-  return /(?:https?:\/\/|www\.|t\.me\/|telegram\.me\/)/i.test(String(text));
-}
-
-function cleanInput(text = '') {
-  return String(text || '').replace(/\s+/g, ' ').trim();
 }
 
 async function editSupportMessage(callbackQuery, text, replyMarkup) {
@@ -101,65 +85,6 @@ async function answerSupportCallback(callbackQuery, text = '') {
   }).catch(() => {});
 }
 
-async function prepareCheckout(message, submission, context = {}) {
-  const chatId = message?.chat?.id;
-  const user = message?.from || {};
-  const amount = Number(submission?.amount || 0);
-  if (!chatId || !user?.id || !amount) return true;
-
-  if (!isBayarcashConfigured()) {
-    await sendMessage(chatId, '⚙️ Payment gateway tengah disediakan. Cuba lagi kejap nanti.');
-    return true;
-  }
-
-  try {
-    await createPendingSupport({
-      orderNumber: submission.orderNumber,
-      userId: user.id,
-      username: user.username || '',
-      amount,
-    });
-
-    const payment = await createSupportPayment({
-      amount,
-      user,
-      publicBaseUrl: context.baseUrl,
-      orderNumber: submission.orderNumber,
-    });
-    await markSupportIntentCreated(submission.orderNumber, payment.paymentIntentId);
-    await markSupportSubmissionCheckout(submission.orderNumber, payment.url, payment.paymentIntentId);
-
-    await sendMessage(
-      chatId,
-      [
-        `🤍 Support RM${amount} — ${submission.tierLabel}`,
-        '',
-        'Nama & kata2 support dah diterima 🙇🏻',
-        'Tekan Submit di bawah untuk buka QR & buat payment.',
-      ].join('\n'),
-      {
-        reply_markup: {
-          inline_keyboard: [
-            [{ text: `✅ Submit & Bayar RM${amount}`, url: payment.url }],
-            [{ text: '❌ Batal', callback_data: `${SUPPORT_CANCEL_PREFIX}${submission.orderNumber}` }],
-          ],
-        },
-      },
-    );
-  } catch (error) {
-    await markSupportIntentFailed(submission.orderNumber, error?.code || 'UNKNOWN').catch(() => {});
-    console.error('[support] checkout failed:', error?.code, error?.status, error?.message, error?.details || '');
-    await sendMessage(
-      chatId,
-      error?.code === 'BAYARCASH_PAYER_EMAIL_REQUIRED'
-        ? '⚙️ Support payment belum ready sepenuhnya. Admin tengah lengkapkan email payment gateway.'
-        : '❌ Payment page tak dapat dibuat sekarang. Cuba /support semula kejap lagi.',
-    ).catch(() => {});
-  }
-
-  return true;
-}
-
 export async function handleSupportCommand(message = {}) {
   const chatId = message?.chat?.id;
   const userId = message?.from?.id;
@@ -171,84 +96,18 @@ export async function handleSupportCommand(message = {}) {
   return true;
 }
 
-export async function processSupportMessage(message = {}, context = {}) {
-  const chatId = message?.chat?.id;
-  const userId = message?.from?.id;
-  if (!chatId || !userId || message?.chat?.type !== 'private') return false;
-
-  const submission = await getActiveSupportSubmission(userId).catch((error) => {
-    console.warn('[support] active submission lookup failed:', error?.message);
-    return null;
-  });
-  if (!submission) return false;
-
-  const rawText = String(message?.text || '').trim();
-  if (rawText.toLowerCase() === '/cancel') {
-    await cancelSupportSubmission(submission.orderNumber, userId).catch(() => {});
-    await sendMessage(chatId, '❌ Support dibatalkan. Bila2 nak support, tekan /support ya 🤍');
-    return true;
-  }
-
-  if (!rawText) {
-    await sendMessage(chatId, submission.state === 'AWAITING_MESSAGE'
-      ? 'Sila hantar kata2 support dalam bentuk text ya 🙇🏻'
-      : 'Sila tulis nama dalam bentuk text ya 🙇🏻');
-    return true;
-  }
-
-  if (submission.state === 'AWAITING_MESSAGE') {
-    const supportMessage = cleanInput(rawText);
-    if (supportMessage.length < 2) {
-      await sendMessage(chatId, 'Ayat tu pendek sangat 😅 Cuba tulis kata2 support sikit ya.');
-      return true;
-    }
-    if (supportMessage.length > 300) {
-      await sendMessage(chatId, 'Kata2 support max 300 aksara ya. Pendekkan sikit 🙇🏻');
-      return true;
-    }
-    if (containsLink(supportMessage)) {
-      await sendMessage(chatId, 'Kata2 support tak boleh ada link ya 🙇🏻 Cuba hantar ayat tanpa link.');
-      return true;
-    }
-
-    await setSupportSubmissionMessage(submission.orderNumber, userId, supportMessage);
-    await sendMessage(
-      chatId,
-      [
-        '✍🏻 Sekarang tulis nama yang korang nak paparkan bersama kata2 support tadi.',
-        '',
-        'Contoh: Amir',
-      ].join('\n'),
-    );
-    return true;
-  }
-
-  if (submission.state === 'AWAITING_NAME') {
-    const displayName = cleanInput(rawText);
-    if (!displayName || displayName.length > 60) {
-      await sendMessage(chatId, 'Nama mestilah 1–60 aksara ya 🙇🏻');
-      return true;
-    }
-    if (containsLink(displayName) || displayName.startsWith('/')) {
-      await sendMessage(chatId, 'Tulis nama sahaja ya, tanpa link atau command 🙇🏻');
-      return true;
-    }
-
-    const updated = await setSupportSubmissionName(submission.orderNumber, userId, displayName);
-    return prepareCheckout(message, updated || { ...submission, displayName }, context);
-  }
-
+// Feedback/name capture is intentionally disabled for now.
+// Returning false ensures normal text and downloader links continue to the normal bot flow.
+export async function processSupportMessage() {
   return false;
 }
 
 export async function processSupportCallback(callbackQuery = {}, context = {}) {
   const action = String(callbackQuery?.data || '');
   const amount = amountFromCallback(action);
-  const isCancel = action.startsWith(SUPPORT_CANCEL_PREFIX);
   const isSupportAction = Boolean(amount)
     || action === SUPPORT_AMOUNTS_ACTION
-    || action === SUPPORT_BACK_ACTION
-    || isCancel;
+    || action === SUPPORT_BACK_ACTION;
   if (!isSupportAction) return false;
 
   const chatId = callbackQuery?.message?.chat?.id;
@@ -273,18 +132,6 @@ export async function processSupportCallback(callbackQuery = {}, context = {}) {
     return true;
   }
 
-  if (isCancel) {
-    const orderNumber = action.slice(SUPPORT_CANCEL_PREFIX.length);
-    await cancelSupportSubmission(orderNumber, user.id).catch(() => {});
-    await answerSupportCallback(callbackQuery, 'Support dibatalkan.');
-    await editSupportMessage(
-      callbackQuery,
-      '❌ Support dibatalkan.\n\nBila2 nak support, tekan /support ya 🤍',
-      { inline_keyboard: [] },
-    );
-    return true;
-  }
-
   const tier = tierForAmount(amount);
   await answerSupportCallback(callbackQuery, `${tier.label} dipilih!`);
 
@@ -299,6 +146,8 @@ export async function processSupportCallback(callbackQuery = {}, context = {}) {
 
   const orderNumber = createSupportOrderNumber();
   try {
+    // Keep a lightweight submission only so the selected tier is retained for payment confirmation.
+    // No feedback message or display name is requested or stored.
     await createSupportSubmission({
       orderNumber,
       userId: user.id,
@@ -308,26 +157,45 @@ export async function processSupportCallback(callbackQuery = {}, context = {}) {
       tierLabel: tier.label,
     });
 
+    await createPendingSupport({
+      orderNumber,
+      userId: user.id,
+      username: user.username || '',
+      amount,
+    });
+
+    const payment = await createSupportPayment({
+      amount,
+      user,
+      publicBaseUrl: context.baseUrl,
+      orderNumber,
+    });
+
+    await markSupportIntentCreated(orderNumber, payment.paymentIntentId);
+    await markSupportSubmissionCheckout(orderNumber, payment.url, payment.paymentIntentId);
+
     await editSupportMessage(
       callbackQuery,
       [
-        `🤍 Support RM${amount} di pilih - ${tier.label}!`,
+        `🤍 Support RM${amount} dipilih — ${tier.label}!`,
         '',
-        'Sila tulis kata2 support 🙇🏻',
-        '',
-        'Kata2 ni akan dipaparkan di channel selepas payment berjaya.',
+        'Tekan button di bawah untuk terus ke payment.',
       ].join('\n'),
       {
         inline_keyboard: [
+          [{ text: `💳 Bayar RM${amount}`, url: payment.url }],
           [{ text: '← Tukar Amount', callback_data: SUPPORT_AMOUNTS_ACTION }],
         ],
       },
     );
   } catch (error) {
-    console.error('[support] submission start failed:', error?.message);
+    await markSupportIntentFailed(orderNumber, error?.code || 'UNKNOWN').catch(() => {});
+    console.error('[support] checkout failed:', error?.code, error?.status, error?.message, error?.details || '');
     await editSupportMessage(
       callbackQuery,
-      '❌ Tak dapat mula support sekarang. Cuba /support sekali lagi.',
+      error?.code === 'BAYARCASH_PAYER_EMAIL_REQUIRED'
+        ? '⚙️ Support payment belum ready sepenuhnya. Admin tengah lengkapkan email payment gateway.'
+        : '❌ Payment page tak dapat dibuat sekarang. Cuba /support semula kejap lagi.',
       { inline_keyboard: [[{ text: '← Tukar Amount', callback_data: SUPPORT_AMOUNTS_ACTION }]] },
     );
   }

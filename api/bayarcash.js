@@ -1,25 +1,10 @@
 import { isBayarcashConfigured, isBayarcashSandbox, verifyTransactionCallback } from '../src/payments/bayarcash.js';
 import { applyBayarcashTransaction } from '../src/support/store.js';
-import { getSupportSubmission, markSupportSubmissionAnnounced } from '../src/support/submissions.js';
+import { getSupportSubmission } from '../src/support/submissions.js';
 import { sendMessage } from '../src/telegram.js';
 
 function json(res, status, body) {
   res.status(status).json(body);
-}
-
-function supportChannelUsername() {
-  const configured = String(
-    process.env.SUPPORT_CHANNEL_USERNAME
-    || process.env.REQUIRED_CHANNEL_USERNAME
-    || '@ar_downloaderbot',
-  ).trim();
-  if (!configured) return '@ar_downloaderbot';
-  if (configured.startsWith('@')) return configured;
-  if (/^https?:\/\/t\.me\//i.test(configured)) {
-    const slug = configured.replace(/^https?:\/\/t\.me\//i, '').split(/[/?#]/)[0];
-    return slug ? `@${slug}` : '@ar_downloaderbot';
-  }
-  return `@${configured.replace(/^@/, '')}`;
 }
 
 function confirmationText(result, submission = null) {
@@ -38,14 +23,6 @@ function confirmationText(result, submission = null) {
   const tierLabel = submission?.tierLabel || result?.tier?.label;
   if (tierLabel) lines.push(`Status: ${tierLabel}`);
   return lines.join('\n');
-}
-
-function supporterPostText(submission) {
-  return [
-    `“${submission.supportMessage}”`,
-    '',
-    `- ${submission.displayName}, ${submission.tierLabel}.`,
-  ].join('\n');
 }
 
 export default async function handler(req, res) {
@@ -102,26 +79,6 @@ export default async function handler(req, res) {
     });
   }
 
-  if (
-    result?.paid
-    && !isBayarcashSandbox()
-    && submission?.supportMessage
-    && submission?.displayName
-    && submission?.tierLabel
-    && !submission?.announcedAt
-  ) {
-    try {
-      await sendMessage(supportChannelUsername(), supporterPostText(submission));
-      await markSupportSubmissionAnnounced(result.orderNumber);
-      console.log('[bayarcash] supporter testimonial announced', {
-        order_number: result.orderNumber,
-        channel: supportChannelUsername(),
-        tier: submission.tierKey,
-      });
-    } catch (error) {
-      console.warn('[bayarcash] supporter channel announcement failed:', error?.message);
-    }
-  }
-
+  // Support testimonial/feedback publishing is intentionally disabled for now.
   return json(res, 200, { ok: true });
 }
