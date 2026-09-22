@@ -14,6 +14,7 @@ import { handleHqLabCommand, processHqLabMessage } from '../src/features/hq-lab.
 import { processTikTokSlideshowChoice } from '../src/features/tiktok-slideshow.js';
 import { handleSupportTestCommand } from '../src/features/support-test.js';
 import { handleSupportCommand, processSupportCallback, processSupportMessage } from '../src/features/support.js';
+import { handleCheckMemberCommand } from '../src/features/channel-diagnostic.js';
 import { enforceChannelGateForCallback, enforceChannelGateForMessage, maybePromptChannelAfterSuccess, processChannelGateCallback } from '../src/features/channel-gate.js';
 import { scheduleLinkJob } from '../src/link-queue.js';
 
@@ -164,6 +165,10 @@ export default async function handler(req, res) {
     if (command === '/supporttest') {
       await handleSupportTestCommand(message, context);
       return json(res, 200, { ok: true, support_test: true });
+    }
+    if (command === '/checkmember') {
+      await handleCheckMemberCommand(message);
+      return json(res, 200, { ok: true, channel_member_diagnostic: true });
     }
     if (command === '/reset') {
       resetUserFence(update);
