@@ -22,5 +22,10 @@ jobs:
         run: npm run check
       - name: Check channel gate threshold
         run: node scripts/channel-gate-threshold-selftest.mjs
+      - name: Verify channel membership access
+        if: github.event_name == 'push'
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+        run: node scripts/channel-membership-selftest.mjs
       - name: Check media worker Python syntax
         run: python3 -m py_compile scripts/heavy_status_worker.py scripts/apple_live_worker.py scripts/prepare_wallpaper_video.py
