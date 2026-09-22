@@ -5,8 +5,8 @@ import { sendMessage, telegram } from '../telegram.js';
 const EVENT_TYPES = new Set(['download', 'status_hq', 'live_wallpaper']);
 const STATS_FILE = String(process.env.STATS_FILE_PATH || '/data/bot-stats.json');
 const STATS_VERSION = 2;
-const CHANNEL_GATE_COUNTER_VERSION = 2;
-export const CHANNEL_GATE_THRESHOLD = 5;
+const CHANNEL_GATE_COUNTER_VERSION = 3;
+export const CHANNEL_GATE_THRESHOLD = 1;
 export const PREMIUM_HQ_CHANNEL_GATE_THRESHOLD = CHANNEL_GATE_THRESHOLD;
 
 let statePromise = null;
@@ -133,7 +133,6 @@ export async function recordUsage(userId, eventType = null) {
 
     if (eventType) {
       user.completedUse = true;
-      user.channelUseCount = Math.max(0, Number(user.channelUseCount || 0)) + 1;
     }
 
     if (eventType === 'download') {
@@ -177,6 +176,7 @@ export async function markPremiumHqCompleted(userId) {
     if (!user) return;
     user.premiumHqCompletedCount = Math.max(0, Number(user.premiumHqCompletedCount || 0)) + 1;
     user.premiumHqCompleted = user.premiumHqCompletedCount >= PREMIUM_HQ_CHANNEL_GATE_THRESHOLD;
+    user.channelUseCount = Math.max(1, Number(user.channelUseCount || 0));
   });
   return true;
 }

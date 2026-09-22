@@ -7,16 +7,16 @@ const legacyUserId = 900000001;
 const newUserId = 900000002;
 
 await writeFile(statsFile, JSON.stringify({
-  version: 1,
+  version: 2,
   trackingSince: new Date().toISOString(),
   users: {
     [legacyUserId]: {
       firstSeen: new Date().toISOString(),
       lastSeen: new Date().toISOString(),
       premiumHqCompletedCount: 3,
-      premiumHqCompleted: false,
+      premiumHqCompleted: true,
       completedUse: true,
-      channelGateCounterVersion: 1,
+      channelGateCounterVersion: 2,
       channelUseCount: 5,
       joinPromptSent: true,
     },
@@ -29,15 +29,16 @@ const {
   getChannelUseCount,
   hasChannelGateRequired,
   hasJoinPromptBeenSent,
+  markPremiumHqCompleted,
   recordUsage,
 } = await import('../src/bot/stats.js');
 
 try {
-  if (CHANNEL_GATE_THRESHOLD !== 5) {
-    throw new Error(`Expected threshold 5, got ${CHANNEL_GATE_THRESHOLD}`);
+  if (CHANNEL_GATE_THRESHOLD !== 1) {
+    throw new Error(`Expected threshold 1, got ${CHANNEL_GATE_THRESHOLD}`);
   }
 
-  // Existing users restart their channel allowance from this rollout.
+  // Existing users restart from this rollout, even if an older gate had already been reached.
   await recordUsage(legacyUserId);
   const legacyCount = await getChannelUseCount(legacyUserId);
   const legacyGated = await hasChannelGateRequired(legacyUserId);
@@ -46,36 +47,50 @@ try {
     throw new Error(`Legacy reset failed: count=${legacyCount}, gated=${legacyGated}, prompt=${legacyPromptSent}`);
   }
 
+  // Normal downloads, Status HQ accounting and Live Wallpaper must not trigger the channel gate.
   const events = ['download', 'status_hq', 'live_wallpaper', 'download', 'status_hq'];
-  for (let index = 0; index < events.length; index += 1) {
-    const use = index + 1;
-    await recordUsage(newUserId, events[index]);
+  for (const event of events) {
+    await recordUsage(newUserId, event);
     const count = await getChannelUseCount(newUserId);
     const gated = await hasChannelGateRequired(newUserId);
-    const shouldGateNextUse = use >= CHANNEL_GATE_THRESHOLD;
-    if (count !== use || gated !== shouldGateNextUse) {
-      throw new Error(`Unexpected gate state after use ${use}: count=${count}, gated=${gated}`);
+    if (count !== 0 || gated) {
+      throw new Error(`Non-Premium event triggered gate: event=${event}, count=${count}, gated=${gated}`);
     }
+  }
+
+  // The first successful Premium + HQ completion activates the gate.
+  await markPremiumHqCompleted(newUserId);
+  const afterPremiumCount = await getChannelUseCount(newUserId);
+  const afterPremiumGated = await hasChannelGateRequired(newUserId);
+  if (afterPremiumCount !== 1 || !afterPremiumGated) {
+    throw new Error(`Premium completion did not trigger gate: count=${afterPremiumCount}, gated=${afterPremiumGated}`);
+  }
+
+  // Repeated completion notifications stay idempotent for the gate counter.
+  await markPremiumHqCompleted(newUserId);
+  const afterDuplicateCompletion = await getChannelUseCount(newUserId);
+  if (afterDuplicateCompletion !== 1) {
+    throw new Error(`Duplicate completion changed gate counter: count=${afterDuplicateCompletion}`);
   }
 
   await recordUsage(newUserId);
   const afterPassiveUpdate = await getChannelUseCount(newUserId);
-  if (afterPassiveUpdate !== 5) {
+  if (afterPassiveUpdate !== 1) {
     throw new Error(`Passive webhook update changed count: ${afterPassiveUpdate}`);
   }
 
   const invalidAccepted = await recordUsage(newUserId, 'not-a-real-use');
   const afterInvalid = await getChannelUseCount(newUserId);
-  if (invalidAccepted || afterInvalid !== 5) {
+  if (invalidAccepted || afterInvalid !== 1) {
     throw new Error(`Invalid event changed count: accepted=${invalidAccepted}, count=${afterInvalid}`);
   }
 
   console.log('CHANNEL_GATE_THRESHOLD_SELFTEST_OK', JSON.stringify({
     threshold: CHANNEL_GATE_THRESHOLD,
     existingUsersRestartFromZero: true,
-    freeCompletedUses: 5,
-    blocksBeforeUse: 6,
-    counts: ['download', 'status_hq', 'live_wallpaper'],
+    normalFeaturesDoNotCount: true,
+    premiumHqSuccessesBeforeGate: 1,
+    duplicateCompletionIsIdempotent: true,
     passiveUpdatesDoNotCount: true,
   }));
 } finally {

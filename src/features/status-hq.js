@@ -70,6 +70,7 @@ export async function processStatusButton(callbackQuery, context = {}) {
 
   const fence = context.fence || null;
   const chatId = callbackQuery?.message?.chat?.id;
+  const userId = callbackQuery?.from?.id;
   const video = callbackQuery?.message?.video || null;
   const videoFileId = video?.file_id;
   const imageFileId = Array.isArray(callbackQuery?.message?.photo)
@@ -119,15 +120,19 @@ export async function processStatusButton(callbackQuery, context = {}) {
   if (heavyCandidate) {
     const progressMessage = await startHeavyStatusProgress(chatId);
     try {
+      const baseUrl = String(context.baseUrl || '').replace(/\/$/, '');
       await dispatchHeavyMediaJob({
         chatId,
+        userId,
         videoFileId,
         fileSize,
         action: 'status_hq',
         progressMessageId: progressMessage?.message_id || 0,
         sourceMessageId: gallery.sourceMessageId,
+        completionCallbackUrl: baseUrl ? `${baseUrl}/api/premium-hq-success` : '',
       });
-      return { premiumVideoCompleted: true };
+      // The worker records Premium + HQ only after sendVideo succeeds.
+      return { premiumVideoDispatched: true };
     } catch (error) {
       console.error('[status-hq/heavy] dispatch failed:', error?.code, error?.message);
       await removeHeavyProgress(chatId, progressMessage?.message_id);

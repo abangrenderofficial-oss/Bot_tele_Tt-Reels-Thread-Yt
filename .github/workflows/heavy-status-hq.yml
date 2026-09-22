@@ -7,6 +7,11 @@ on:
         description: Telegram chat ID
         required: true
         type: string
+      user_id:
+        description: Telegram user ID for completion tracking
+        required: false
+        default: '0'
+        type: string
       video_file_id:
         description: Telegram Bot API video file_id
         required: true
@@ -35,6 +40,11 @@ on:
         description: Original Gallery message ID
         required: false
         default: '0'
+        type: string
+      completion_callback_url:
+        description: Bot callback URL used after Premium HQ send succeeds
+        required: false
+        default: ''
         type: string
 
 permissions:
@@ -84,6 +94,25 @@ jobs:
 
       - name: Process Status HQ
         run: python scripts/heavy_status_worker.py
+
+      - name: Record Premium HQ delivery
+        if: ${{ success() && inputs.completion_callback_url != '' && inputs.user_id != '0' }}
+        shell: bash
+        env:
+          COMPLETION_CALLBACK_URL: ${{ inputs.completion_callback_url }}
+          COMPLETION_CHAT_ID: ${{ inputs.chat_id }}
+          COMPLETION_USER_ID: ${{ inputs.user_id }}
+          COMPLETION_SIGNING_SECRET: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+        run: |
+          payload="${COMPLETION_CHAT_ID}:${COMPLETION_USER_ID}:status_hq:v1"
+          signature="$(printf '%s' "$payload" | openssl dgst -sha256 -hmac "$COMPLETION_SIGNING_SECRET" -hex | awk '{print $2}')"
+          if ! curl --fail-with-body --silent --show-error --retry 3 --retry-delay 2 \
+            -H 'Content-Type: application/json' \
+            -H "x-heavy-worker-signature: ${signature}" \
+            --data "{\"chat_id\":\"${COMPLETION_CHAT_ID}\",\"user_id\":\"${COMPLETION_USER_ID}\",\"event\":\"status_hq\"}" \
+            "$COMPLETION_CALLBACK_URL"; then
+            echo '::warning::Premium HQ was delivered, but completion callback failed after retries.'
+          fi
 
   status_hq_android:
     if: ${{ inputs.action == 'status_hq_android' }}
