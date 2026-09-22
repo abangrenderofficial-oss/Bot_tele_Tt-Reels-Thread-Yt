@@ -1,6 +1,10 @@
 import { isResetAdmin } from '../recovery.js';
 import { sendMessage, telegram } from '../telegram.js';
-import { hasPremiumHqCompleted } from '../bot/stats.js';
+import {
+  hasChannelGateRequired,
+  hasJoinPromptBeenSent,
+  markJoinPromptSent,
+} from '../bot/stats.js';
 
 export const CHANNEL_VERIFY_CALLBACK = 'channel:verify:v1';
 
@@ -45,8 +49,8 @@ export async function sendChannelGatePrompt(chatId) {
     [
       '📢 Join Official Channel Kita 🇲🇾',
       '',
-      'Hai, video Premium+ HQ dah siap! 🥳',
-      `Boleh tolong join ${channelUsername()}, channel kita dulu?`,
+      '5 penggunaan pertama dah selesai 🥳',
+      `Untuk terus guna bot, boleh join ${channelUsername()} dulu?`,
       '',
       'Thank you banyak-banyak atas support korang yang tak berbelah bahagi! 🥹❤️',
       '',
@@ -66,16 +70,18 @@ export async function sendChannelGatePrompt(chatId) {
 
 export async function maybePromptChannelAfterSuccess(chatId, userId) {
   if (!chatId || !userId || isResetAdmin(userId)) return false;
-  if (!(await hasPremiumHqCompleted(userId))) return false;
+  if (!(await hasChannelGateRequired(userId))) return false;
+  if (await hasJoinPromptBeenSent(userId)) return false;
 
   const member = await getMembership(userId);
   if (member !== false) return false;
 
   try {
     await sendChannelGatePrompt(chatId);
+    await markJoinPromptSent(userId);
     return true;
   } catch (error) {
-    console.warn('[channel-gate] Premium+ HQ prompt failed:', error?.message);
+    console.warn('[channel-gate] threshold prompt failed:', error?.message);
     return false;
   }
 }
@@ -85,7 +91,7 @@ export async function enforceChannelGateForMessage(message = {}) {
   const userId = message?.from?.id;
   const chatType = message?.chat?.type;
   if (!chatId || !userId || chatType !== 'private' || isResetAdmin(userId)) return false;
-  if (!(await hasPremiumHqCompleted(userId))) return false;
+  if (!(await hasChannelGateRequired(userId))) return false;
 
   const member = await getMembership(userId);
   if (member !== false) return false;
@@ -101,7 +107,7 @@ export async function enforceChannelGateForCallback(callbackQuery = {}) {
   const chatType = callbackQuery?.message?.chat?.type;
   const userId = callbackQuery?.from?.id;
   if (!chatId || !userId || chatType !== 'private' || isResetAdmin(userId)) return false;
-  if (!(await hasPremiumHqCompleted(userId))) return false;
+  if (!(await hasChannelGateRequired(userId))) return false;
 
   const member = await getMembership(userId);
   if (member !== false) return false;

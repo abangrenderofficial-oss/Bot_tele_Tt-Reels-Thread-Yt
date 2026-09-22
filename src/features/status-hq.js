@@ -127,6 +127,7 @@ export async function processStatusButton(callbackQuery, context = {}) {
         progressMessageId: progressMessage?.message_id || 0,
         sourceMessageId: gallery.sourceMessageId,
       });
+      return { premiumVideoCompleted: true };
     } catch (error) {
       console.error('[status-hq/heavy] dispatch failed:', error?.code, error?.message);
       await removeHeavyProgress(chatId, progressMessage?.message_id);
@@ -153,6 +154,7 @@ export async function processStatusButton(callbackQuery, context = {}) {
       }
       await progress.complete();
       await sendDocumentFileUpload(chatId, prepared.filePath, await statusImageCaption(), 'status-hq.jpg');
+      premiumVideoCompleted = true;
     } else {
       prepared = await localMediaLane(async () => {
         let sourceError = null;

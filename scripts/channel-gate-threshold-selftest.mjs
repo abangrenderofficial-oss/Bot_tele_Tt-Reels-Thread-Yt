@@ -13,53 +13,63 @@ await writeFile(statsFile, JSON.stringify({
     [legacyUserId]: {
       firstSeen: new Date().toISOString(),
       lastSeen: new Date().toISOString(),
-      premiumHqCompleted: true,
+      premiumHqCompletedCount: 3,
+      premiumHqCompleted: false,
+      completedUse: true,
     },
   },
   monthlyDownloads: {},
 }), 'utf8');
 
 const {
-  PREMIUM_HQ_CHANNEL_GATE_THRESHOLD,
-  getPremiumHqCompletedCount,
-  hasPremiumHqCompleted,
-  markPremiumHqCompleted,
+  CHANNEL_GATE_THRESHOLD,
+  getChannelUseCount,
+  hasChannelGateRequired,
   recordUsage,
 } = await import('../src/bot/stats.js');
 
 try {
-  if (PREMIUM_HQ_CHANNEL_GATE_THRESHOLD !== 5) {
-    throw new Error(`Expected threshold 5, got ${PREMIUM_HQ_CHANNEL_GATE_THRESHOLD}`);
+  if (CHANNEL_GATE_THRESHOLD !== 5) {
+    throw new Error(`Expected threshold 5, got ${CHANNEL_GATE_THRESHOLD}`);
   }
 
-  // Legacy boolean=true represented one successful Premium+ HQ use before counters existed.
   await recordUsage(legacyUserId);
-  const legacyCount = await getPremiumHqCompletedCount(legacyUserId);
-  if (legacyCount !== 1 || await hasPremiumHqCompleted(legacyUserId)) {
+  const legacyCount = await getChannelUseCount(legacyUserId);
+  if (legacyCount !== 3) {
     throw new Error(`Legacy migration failed: count=${legacyCount}`);
   }
 
-  for (let use = 1; use <= 4; use += 1) {
-    await markPremiumHqCompleted(newUserId);
-    const count = await getPremiumHqCompletedCount(newUserId);
-    const gated = await hasPremiumHqCompleted(newUserId);
-    if (count !== use || gated) {
-      throw new Error(`Gate triggered too early at use ${use}: count=${count}, gated=${gated}`);
+  const events = ['download', 'status_hq', 'live_wallpaper', 'download', 'status_hq'];
+  for (let index = 0; index < events.length; index += 1) {
+    const use = index + 1;
+    await recordUsage(newUserId, events[index]);
+    const count = await getChannelUseCount(newUserId);
+    const gated = await hasChannelGateRequired(newUserId);
+    const shouldGateNextUse = use >= CHANNEL_GATE_THRESHOLD;
+    if (count !== use || gated !== shouldGateNextUse) {
+      throw new Error(`Unexpected gate state after use ${use}: count=${count}, gated=${gated}`);
     }
   }
 
-  await markPremiumHqCompleted(newUserId);
-  const fifthCount = await getPremiumHqCompletedCount(newUserId);
-  const fifthGated = await hasPremiumHqCompleted(newUserId);
-  if (fifthCount !== 5 || !fifthGated) {
-    throw new Error(`Gate did not trigger on fifth use: count=${fifthCount}, gated=${fifthGated}`);
+  await recordUsage(newUserId);
+  const afterPassiveUpdate = await getChannelUseCount(newUserId);
+  if (afterPassiveUpdate !== 5) {
+    throw new Error(`Passive webhook update changed count: ${afterPassiveUpdate}`);
+  }
+
+  const invalidAccepted = await recordUsage(newUserId, 'not-a-real-use');
+  const afterInvalid = await getChannelUseCount(newUserId);
+  if (invalidAccepted || afterInvalid !== 5) {
+    throw new Error(`Invalid event changed count: accepted=${invalidAccepted}, count=${afterInvalid}`);
   }
 
   console.log('CHANNEL_GATE_THRESHOLD_SELFTEST_OK', JSON.stringify({
-    threshold: PREMIUM_HQ_CHANNEL_GATE_THRESHOLD,
-    firstFourUsesFree: true,
-    gateOnUse: 5,
-    legacyBooleanMigratesToCount: 1,
+    threshold: CHANNEL_GATE_THRESHOLD,
+    freeCompletedUses: 5,
+    blocksBeforeUse: 6,
+    counts: ['download', 'status_hq', 'live_wallpaper'],
+    passiveUpdatesDoNotCount: true,
+    legacyPremiumCountMigrates: legacyCount,
   }));
 } finally {
   await rm(statsFile, { force: true }).catch(() => {});

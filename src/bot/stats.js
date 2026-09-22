@@ -5,7 +5,8 @@ import { sendMessage, telegram } from '../telegram.js';
 const EVENT_TYPES = new Set(['download', 'status_hq', 'live_wallpaper']);
 const STATS_FILE = String(process.env.STATS_FILE_PATH || '/data/bot-stats.json');
 const STATS_VERSION = 1;
-export const PREMIUM_HQ_CHANNEL_GATE_THRESHOLD = 5;
+export const CHANNEL_GATE_THRESHOLD = 5;
+export const PREMIUM_HQ_CHANNEL_GATE_THRESHOLD = CHANNEL_GATE_THRESHOLD;
 
 let statePromise = null;
 let writeQueue = Promise.resolve();
@@ -82,9 +83,16 @@ function monthKey(date = new Date()) {
 function legacyPremiumHqCount(old = {}) {
   const stored = Number(old?.premiumHqCompletedCount);
   if (Number.isSafeInteger(stored) && stored >= 0) return stored;
-  // Before the counter existed, premiumHqCompleted only meant the user had
-  // successfully completed Premium+ HQ at least once. Preserve that as 1 use.
   return old?.premiumHqCompleted ? 1 : 0;
+}
+
+function legacyChannelUseCount(old = {}) {
+  const stored = Number(old?.channelUseCount);
+  if (Number.isSafeInteger(stored) && stored >= 0) return stored;
+
+  const premiumCount = legacyPremiumHqCount(old);
+  if (premiumCount > 0) return premiumCount;
+  return old?.completedUse || old?.statusHq || old?.liveWallpaper ? 1 : 0;
 }
 
 function touchUser(state, userId, now = new Date()) {
@@ -93,12 +101,14 @@ function touchUser(state, userId, now = new Date()) {
   const iso = now.toISOString();
   const old = state.users[key] && typeof state.users[key] === 'object' ? state.users[key] : {};
   const premiumHqCompletedCount = legacyPremiumHqCount(old);
+  const channelUseCount = legacyChannelUseCount(old);
   const user = {
     firstSeen: old.firstSeen || iso,
     lastSeen: iso,
     statusHq: Boolean(old.statusHq),
     liveWallpaper: Boolean(old.liveWallpaper),
     completedUse: Boolean(old.completedUse || old.statusHq || old.liveWallpaper),
+    channelUseCount,
     premiumHqCompletedCount,
     premiumHqCompleted: premiumHqCompletedCount >= PREMIUM_HQ_CHANNEL_GATE_THRESHOLD,
     joinPromptSent: Boolean(old.joinPromptSent),
@@ -117,7 +127,10 @@ export async function recordUsage(userId, eventType = null) {
     const user = touchUser(state, userId, now);
     if (!user) return;
 
-    if (eventType) user.completedUse = true;
+    if (eventType) {
+      user.completedUse = true;
+      user.channelUseCount = Math.max(0, Number(user.channelUseCount || 0)) + 1;
+    }
 
     if (eventType === 'download') {
       const month = monthKey(now);
@@ -138,6 +151,18 @@ export async function hasCompletedUse(userId) {
   const state = await loadState();
   const user = state.users?.[key];
   return Boolean(user?.completedUse || user?.statusHq || user?.liveWallpaper);
+}
+
+export async function getChannelUseCount(userId) {
+  const key = validUserKey(userId);
+  if (!key) return 0;
+  await writeQueue;
+  const state = await loadState();
+  return legacyChannelUseCount(state.users?.[key] || {});
+}
+
+export async function hasChannelGateRequired(userId) {
+  return (await getChannelUseCount(userId)) >= CHANNEL_GATE_THRESHOLD;
 }
 
 export async function markPremiumHqCompleted(userId) {
