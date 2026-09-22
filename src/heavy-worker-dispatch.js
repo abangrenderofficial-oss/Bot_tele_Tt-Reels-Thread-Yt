@@ -26,12 +26,14 @@ export function shouldUseHeavyWorker(video = {}) {
 
 export async function dispatchHeavyMediaJob({
   chatId,
+  userId = 0,
   videoFileId,
   fileSize = 0,
   action = 'status_hq',
   sourceKind = 'link',
   progressMessageId = 0,
   sourceMessageId = 0,
+  completionCallbackUrl = '',
 }) {
   const token = githubToken();
   if (!token) {
@@ -72,12 +74,14 @@ export async function dispatchHeavyMediaJob({
       ref,
       inputs: {
         chat_id: String(chatId),
+        user_id: String(Math.max(0, Number(userId) || 0)),
         video_file_id: String(videoFileId),
         file_size: String(size),
         action: String(action || 'status_hq'),
         source_kind: String(sourceKind === 'gallery' ? 'gallery' : 'link'),
         progress_message_id: String(Math.max(0, Number(progressMessageId) || 0)),
         source_message_id: String(Math.max(0, Number(sourceMessageId) || 0)),
+        completion_callback_url: String(completionCallbackUrl || '').trim(),
       },
     }),
     signal: AbortSignal.timeout(Number(process.env.GITHUB_WORKER_DISPATCH_TIMEOUT_MS || 12000)),
