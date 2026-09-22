@@ -159,7 +159,6 @@ export async function processStatusButton(callbackQuery, context = {}) {
       }
       await progress.complete();
       await sendDocumentFileUpload(chatId, prepared.filePath, await statusImageCaption(), 'status-hq.jpg');
-      premiumVideoCompleted = true;
     } else {
       prepared = await localMediaLane(async () => {
         let sourceError = null;
