@@ -20,5 +20,7 @@ jobs:
         run: npm install --ignore-scripts --no-audit --no-fund
       - name: Check JavaScript syntax
         run: npm run check
+      - name: Check channel gate threshold
+        run: node scripts/channel-gate-threshold-selftest.mjs
       - name: Check media worker Python syntax
         run: python3 -m py_compile scripts/heavy_status_worker.py scripts/apple_live_worker.py scripts/prepare_wallpaper_video.py
