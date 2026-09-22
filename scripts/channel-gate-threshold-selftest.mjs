@@ -16,6 +16,9 @@ await writeFile(statsFile, JSON.stringify({
       premiumHqCompletedCount: 3,
       premiumHqCompleted: false,
       completedUse: true,
+      channelGateCounterVersion: 1,
+      channelUseCount: 5,
+      joinPromptSent: true,
     },
   },
   monthlyDownloads: {},
@@ -25,6 +28,7 @@ const {
   CHANNEL_GATE_THRESHOLD,
   getChannelUseCount,
   hasChannelGateRequired,
+  hasJoinPromptBeenSent,
   recordUsage,
 } = await import('../src/bot/stats.js');
 
@@ -33,10 +37,13 @@ try {
     throw new Error(`Expected threshold 5, got ${CHANNEL_GATE_THRESHOLD}`);
   }
 
+  // Existing users restart their channel allowance from this rollout.
   await recordUsage(legacyUserId);
   const legacyCount = await getChannelUseCount(legacyUserId);
-  if (legacyCount !== 3) {
-    throw new Error(`Legacy migration failed: count=${legacyCount}`);
+  const legacyGated = await hasChannelGateRequired(legacyUserId);
+  const legacyPromptSent = await hasJoinPromptBeenSent(legacyUserId);
+  if (legacyCount !== 0 || legacyGated || legacyPromptSent) {
+    throw new Error(`Legacy reset failed: count=${legacyCount}, gated=${legacyGated}, prompt=${legacyPromptSent}`);
   }
 
   const events = ['download', 'status_hq', 'live_wallpaper', 'download', 'status_hq'];
@@ -65,11 +72,11 @@ try {
 
   console.log('CHANNEL_GATE_THRESHOLD_SELFTEST_OK', JSON.stringify({
     threshold: CHANNEL_GATE_THRESHOLD,
+    existingUsersRestartFromZero: true,
     freeCompletedUses: 5,
     blocksBeforeUse: 6,
     counts: ['download', 'status_hq', 'live_wallpaper'],
     passiveUpdatesDoNotCount: true,
-    legacyPremiumCountMigrates: legacyCount,
   }));
 } finally {
   await rm(statsFile, { force: true }).catch(() => {});
