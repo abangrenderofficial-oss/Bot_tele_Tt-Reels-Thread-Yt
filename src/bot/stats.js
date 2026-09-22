@@ -4,7 +4,8 @@ import { sendMessage, telegram } from '../telegram.js';
 
 const EVENT_TYPES = new Set(['download', 'status_hq', 'live_wallpaper']);
 const STATS_FILE = String(process.env.STATS_FILE_PATH || '/data/bot-stats.json');
-const STATS_VERSION = 1;
+const STATS_VERSION = 2;
+const CHANNEL_GATE_COUNTER_VERSION = 2;
 export const CHANNEL_GATE_THRESHOLD = 5;
 export const PREMIUM_HQ_CHANNEL_GATE_THRESHOLD = CHANNEL_GATE_THRESHOLD;
 
@@ -86,13 +87,14 @@ function legacyPremiumHqCount(old = {}) {
   return old?.premiumHqCompleted ? 1 : 0;
 }
 
-function legacyChannelUseCount(old = {}) {
-  const stored = Number(old?.channelUseCount);
-  if (Number.isSafeInteger(stored) && stored >= 0) return stored;
+function hasCurrentChannelCounter(old = {}) {
+  return Number(old?.channelGateCounterVersion || 0) === CHANNEL_GATE_COUNTER_VERSION;
+}
 
-  const premiumCount = legacyPremiumHqCount(old);
-  if (premiumCount > 0) return premiumCount;
-  return old?.completedUse || old?.statusHq || old?.liveWallpaper ? 1 : 0;
+function currentChannelUseCount(old = {}) {
+  if (!hasCurrentChannelCounter(old)) return 0;
+  const stored = Number(old?.channelUseCount);
+  return Number.isSafeInteger(stored) && stored >= 0 ? stored : 0;
 }
 
 function touchUser(state, userId, now = new Date()) {
@@ -101,17 +103,19 @@ function touchUser(state, userId, now = new Date()) {
   const iso = now.toISOString();
   const old = state.users[key] && typeof state.users[key] === 'object' ? state.users[key] : {};
   const premiumHqCompletedCount = legacyPremiumHqCount(old);
-  const channelUseCount = legacyChannelUseCount(old);
+  const counterWasCurrent = hasCurrentChannelCounter(old);
+  const channelUseCount = currentChannelUseCount(old);
   const user = {
     firstSeen: old.firstSeen || iso,
     lastSeen: iso,
     statusHq: Boolean(old.statusHq),
     liveWallpaper: Boolean(old.liveWallpaper),
     completedUse: Boolean(old.completedUse || old.statusHq || old.liveWallpaper),
+    channelGateCounterVersion: CHANNEL_GATE_COUNTER_VERSION,
     channelUseCount,
     premiumHqCompletedCount,
     premiumHqCompleted: premiumHqCompletedCount >= PREMIUM_HQ_CHANNEL_GATE_THRESHOLD,
-    joinPromptSent: Boolean(old.joinPromptSent),
+    joinPromptSent: counterWasCurrent ? Boolean(old.joinPromptSent) : false,
   };
   state.users[key] = user;
   return user;
@@ -158,7 +162,7 @@ export async function getChannelUseCount(userId) {
   if (!key) return 0;
   await writeQueue;
   const state = await loadState();
-  return legacyChannelUseCount(state.users?.[key] || {});
+  return currentChannelUseCount(state.users?.[key] || {});
 }
 
 export async function hasChannelGateRequired(userId) {
@@ -194,7 +198,9 @@ export async function hasJoinPromptBeenSent(userId) {
   if (!key) return false;
   await writeQueue;
   const state = await loadState();
-  return Boolean(state.users?.[key]?.joinPromptSent);
+  const user = state.users?.[key] || {};
+  if (!hasCurrentChannelCounter(user)) return false;
+  return Boolean(user.joinPromptSent);
 }
 
 export async function markJoinPromptSent(userId) {
