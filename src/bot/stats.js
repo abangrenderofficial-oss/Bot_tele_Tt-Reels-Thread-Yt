@@ -171,6 +171,7 @@ export async function markPremiumHqCompleted(userId, completionId = '') {
   const key = validUserKey(userId);
   if (!key) return false;
   const normalizedCompletionId = String(completionId || '').trim().slice(0, 160);
+  let didMark = false;
   await mutate((state) => {
     const user = touchUser(state, userId, new Date());
     if (!user) return;
@@ -180,8 +181,9 @@ export async function markPremiumHqCompleted(userId, completionId = '') {
     user.premiumHqCompleted = true;
     user.channelUseCount = CHANNEL_GATE_THRESHOLD;
     if (normalizedCompletionId) user.lastPremiumHqCompletionId = normalizedCompletionId;
+    didMark = true;
   });
-  return true;
+  return didMark;
 }
 
 export async function getPremiumHqCompletedCount(userId) {
