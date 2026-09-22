@@ -7,16 +7,16 @@ const legacyUserId = 900000001;
 const newUserId = 900000002;
 
 await writeFile(statsFile, JSON.stringify({
-  version: 1,
+  version: 2,
   trackingSince: new Date().toISOString(),
   users: {
     [legacyUserId]: {
       firstSeen: new Date().toISOString(),
       lastSeen: new Date().toISOString(),
-      premiumHqCompletedCount: 3,
-      premiumHqCompleted: false,
+      premiumHqCompletedCount: 8,
+      premiumHqCompleted: true,
       completedUse: true,
-      channelGateCounterVersion: 1,
+      channelGateCounterVersion: 2,
       channelUseCount: 5,
       joinPromptSent: true,
     },
@@ -29,15 +29,16 @@ const {
   getChannelUseCount,
   hasChannelGateRequired,
   hasJoinPromptBeenSent,
+  markPremiumHqCompleted,
   recordUsage,
 } = await import('../src/bot/stats.js');
 
 try {
-  if (CHANNEL_GATE_THRESHOLD !== 5) {
-    throw new Error(`Expected threshold 5, got ${CHANNEL_GATE_THRESHOLD}`);
+  if (CHANNEL_GATE_THRESHOLD !== 1) {
+    throw new Error(`Expected threshold 1, got ${CHANNEL_GATE_THRESHOLD}`);
   }
 
-  // Existing users restart their channel allowance from this rollout.
+  // Existing users start fresh from this rollout, regardless of old counters.
   await recordUsage(legacyUserId);
   const legacyCount = await getChannelUseCount(legacyUserId);
   const legacyGated = await hasChannelGateRequired(legacyUserId);
@@ -46,37 +47,35 @@ try {
     throw new Error(`Legacy reset failed: count=${legacyCount}, gated=${legacyGated}, prompt=${legacyPromptSent}`);
   }
 
-  const events = ['download', 'status_hq', 'live_wallpaper', 'download', 'status_hq'];
-  for (let index = 0; index < events.length; index += 1) {
-    const use = index + 1;
-    await recordUsage(newUserId, events[index]);
-    const count = await getChannelUseCount(newUserId);
-    const gated = await hasChannelGateRequired(newUserId);
-    const shouldGateNextUse = use >= CHANNEL_GATE_THRESHOLD;
-    if (count !== use || gated !== shouldGateNextUse) {
-      throw new Error(`Unexpected gate state after use ${use}: count=${count}, gated=${gated}`);
-    }
+  // Ordinary downloads, Android HQ and Live Wallpaper do not trigger this gate.
+  for (const event of ['download', 'status_hq', 'live_wallpaper', 'download']) {
+    await recordUsage(newUserId, event);
+  }
+  const beforePremiumCount = await getChannelUseCount(newUserId);
+  const beforePremiumGate = await hasChannelGateRequired(newUserId);
+  if (beforePremiumCount !== 0 || beforePremiumGate) {
+    throw new Error(`Non-Premium events triggered gate: count=${beforePremiumCount}, gated=${beforePremiumGate}`);
   }
 
-  await recordUsage(newUserId);
-  const afterPassiveUpdate = await getChannelUseCount(newUserId);
-  if (afterPassiveUpdate !== 5) {
-    throw new Error(`Passive webhook update changed count: ${afterPassiveUpdate}`);
+  const firstMark = await markPremiumHqCompleted(newUserId, 'test-completion-1');
+  const afterPremiumCount = await getChannelUseCount(newUserId);
+  const afterPremiumGate = await hasChannelGateRequired(newUserId);
+  if (!firstMark || afterPremiumCount !== 1 || !afterPremiumGate) {
+    throw new Error(`Premium+ gate failed: marked=${firstMark}, count=${afterPremiumCount}, gated=${afterPremiumGate}`);
   }
 
-  const invalidAccepted = await recordUsage(newUserId, 'not-a-real-use');
-  const afterInvalid = await getChannelUseCount(newUserId);
-  if (invalidAccepted || afterInvalid !== 5) {
-    throw new Error(`Invalid event changed count: accepted=${invalidAccepted}, count=${afterInvalid}`);
+  const duplicateMark = await markPremiumHqCompleted(newUserId, 'test-completion-1');
+  const afterDuplicateCount = await getChannelUseCount(newUserId);
+  if (duplicateMark || afterDuplicateCount !== 1) {
+    throw new Error(`Completion idempotency failed: duplicate=${duplicateMark}, count=${afterDuplicateCount}`);
   }
 
   console.log('CHANNEL_GATE_THRESHOLD_SELFTEST_OK', JSON.stringify({
     threshold: CHANNEL_GATE_THRESHOLD,
     existingUsersRestartFromZero: true,
-    freeCompletedUses: 5,
-    blocksBeforeUse: 6,
-    counts: ['download', 'status_hq', 'live_wallpaper'],
-    passiveUpdatesDoNotCount: true,
+    ordinaryUsesDoNotGate: true,
+    gateAfterFirstPremiumPlusHq: true,
+    completionIdempotent: true,
   }));
 } finally {
   await rm(statsFile, { force: true }).catch(() => {});
