@@ -15,8 +15,11 @@ export const START_TEXT = [
   '• 📱 Status HQ',
   '• 🍎 Live Wallpaper iPhone',
   '',
-  '❤️ Nak support bot & kos server?',
-  'Tekan /support untuk pilih amount dan terus ke payment.',
+  '❤️ jom sama2 bantu kembangkan bot ni nak?',
+  '',
+  'Bot ni boleh mati bila2 masa if kita sama2 tak berjaya bayarkan kos sewa server. Sekali seumur hidup pun tak pe, Terima kasih orang baik ! 🙇🏻',
+  '',
+  'Tekan sini /support',
 ].join('\n');
 
 export function commandMenuText(userId) {
