@@ -24,6 +24,7 @@ export function commandMenuText(userId) {
     '/help — Bantuan ringkas',
     '/menu — Senarai command',
     '/status <link> — Buat Status HQ dari link',
+    '/support — ❤️ Support bot',
     '/reset — Reset sesi sendiri jika bot tersangkut',
   ];
 
