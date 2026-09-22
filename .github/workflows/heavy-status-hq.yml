@@ -36,6 +36,16 @@ on:
         required: false
         default: '0'
         type: string
+      completion_url:
+        description: Signed callback URL after Premium+ HQ is sent
+        required: false
+        default: ''
+        type: string
+      completion_id:
+        description: Idempotency ID for Premium+ HQ completion
+        required: false
+        default: ''
+        type: string
 
 permissions:
   contents: read
@@ -59,7 +69,9 @@ jobs:
       HEAVY_ACTION: status_hq
       HEAVY_PROGRESS_MESSAGE_ID: ${{ inputs.progress_message_id }}
       HEAVY_SOURCE_MESSAGE_ID: ${{ inputs.source_message_id }}
-      HEAVY_VIDEO_MAX_MB: '500'
+      HEAVY_COMPLETION_URL: ${{ inputs.completion_url }}
+      HEAVY_COMPLETION_ID: ${{ inputs.completion_id }}
+      HEAVY_VIDEO_MAX_MB: '150'
 
     steps:
       - name: Checkout
@@ -85,6 +97,56 @@ jobs:
       - name: Process Status HQ
         run: python scripts/heavy_status_worker.py
 
+      - name: Confirm Premium+ HQ completion
+        if: ${{ success() && inputs.completion_url != '' && inputs.completion_id != '' }}
+        shell: bash
+        run: |
+          python - <<'PY'
+          import hashlib
+          import hmac
+          import json
+          import os
+          import time
+          import urllib.error
+          import urllib.request
+
+          url = os.environ['HEAVY_COMPLETION_URL'].strip()
+          chat_id = os.environ['HEAVY_CHAT_ID'].strip()
+          completion_id = os.environ['HEAVY_COMPLETION_ID'].strip()
+          action = 'status_hq'
+          token = os.environ['TELEGRAM_BOT_TOKEN'].strip()
+          signed = f'{chat_id}|{completion_id}|{action}'.encode()
+          signature = hmac.new(token.encode(), signed, hashlib.sha256).hexdigest()
+          body = json.dumps({
+              'chat_id': chat_id,
+              'completion_id': completion_id,
+              'action': action,
+              'signature': signature,
+          }).encode()
+
+          last_error = None
+          for attempt in range(1, 6):
+              try:
+                  request = urllib.request.Request(
+                      url,
+                      data=body,
+                      headers={'Content-Type': 'application/json'},
+                      method='POST',
+                  )
+                  with urllib.request.urlopen(request, timeout=30) as response:
+                      payload = response.read().decode('utf-8', 'replace')
+                      if response.status == 200:
+                          print(f'Premium+ completion confirmed: {payload}', flush=True)
+                          raise SystemExit(0)
+                      last_error = RuntimeError(f'HTTP {response.status}: {payload[:300]}')
+              except Exception as exc:
+                  last_error = exc
+                  print(f'completion callback attempt {attempt} failed: {exc}', flush=True)
+                  if attempt < 5:
+                      time.sleep(attempt * 2)
+          raise SystemExit(f'Premium+ completion callback failed after retries: {last_error}')
+          PY
+
   status_hq_android:
     if: ${{ inputs.action == 'status_hq_android' }}
     runs-on: ubuntu-latest
@@ -98,7 +160,7 @@ jobs:
       HEAVY_FILE_SIZE: ${{ inputs.file_size }}
       HEAVY_PROGRESS_MESSAGE_ID: ${{ inputs.progress_message_id }}
       HEAVY_SOURCE_MESSAGE_ID: ${{ inputs.source_message_id }}
-      HEAVY_VIDEO_MAX_MB: '500'
+      HEAVY_VIDEO_MAX_MB: '150'
 
     steps:
       - name: Checkout
@@ -139,7 +201,7 @@ jobs:
       HEAVY_SOURCE_KIND: ${{ inputs.source_kind }}
       HEAVY_PROGRESS_MESSAGE_ID: ${{ inputs.progress_message_id }}
       HEAVY_SOURCE_MESSAGE_ID: ${{ inputs.source_message_id }}
-      HEAVY_VIDEO_MAX_MB: '500'
+      HEAVY_VIDEO_MAX_MB: '150'
 
     steps:
       - name: Checkout

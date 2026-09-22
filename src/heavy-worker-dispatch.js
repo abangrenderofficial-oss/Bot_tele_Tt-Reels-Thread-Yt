@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 const DEFAULT_OWNER = 'abangrenderofficial-oss';
 const DEFAULT_REPO = 'mdab-129';
 const DEFAULT_WORKFLOW = 'heavy-status-hq.yml';
@@ -5,6 +7,13 @@ const MB = 1024 * 1024;
 
 function githubToken() {
   return String(process.env.GITHUB_ACTIONS_TOKEN || process.env.GH_ACTIONS_TOKEN || '').trim();
+}
+
+function completionIdFor({ chatId, videoFileId, action, sourceMessageId }) {
+  return createHash('sha256')
+    .update(`${chatId}|${videoFileId}|${action}|${sourceMessageId}`)
+    .digest('hex')
+    .slice(0, 40);
 }
 
 export function heavyWorkerConfigured() {
@@ -32,6 +41,7 @@ export async function dispatchHeavyMediaJob({
   sourceKind = 'link',
   progressMessageId = 0,
   sourceMessageId = 0,
+  completionUrl = '',
 }) {
   const token = githubToken();
   if (!token) {
@@ -58,6 +68,7 @@ export async function dispatchHeavyMediaJob({
   const workflow = String(process.env.GITHUB_WORKER_WORKFLOW || DEFAULT_WORKFLOW).trim();
   const ref = String(process.env.GITHUB_WORKER_REF || 'main').trim();
   const endpoint = `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/actions/workflows/${encodeURIComponent(workflow)}/dispatches`;
+  const completionId = completionIdFor({ chatId, videoFileId, action, sourceMessageId });
 
   const response = await fetch(endpoint, {
     method: 'POST',
@@ -78,6 +89,8 @@ export async function dispatchHeavyMediaJob({
         source_kind: String(sourceKind === 'gallery' ? 'gallery' : 'link'),
         progress_message_id: String(Math.max(0, Number(progressMessageId) || 0)),
         source_message_id: String(Math.max(0, Number(sourceMessageId) || 0)),
+        completion_url: String(completionUrl || ''),
+        completion_id: completionId,
       },
     }),
     signal: AbortSignal.timeout(Number(process.env.GITHUB_WORKER_DISPATCH_TIMEOUT_MS || 12000)),
@@ -91,5 +104,5 @@ export async function dispatchHeavyMediaJob({
     throw error;
   }
 
-  return true;
+  return { completionId };
 }

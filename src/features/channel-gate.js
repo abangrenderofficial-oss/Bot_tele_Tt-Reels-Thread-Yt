@@ -49,7 +49,7 @@ export async function sendChannelGatePrompt(chatId) {
     [
       '📢 Join Official Channel Kita 🇲🇾',
       '',
-      '5 penggunaan pertama dah selesai 🥳',
+      'Premium+ HQ pertama dah siap 🥳',
       `Untuk terus guna bot, boleh join ${channelUsername()} dulu?`,
       '',
       'Thank you banyak-banyak atas support korang yang tak berbelah bahagi! 🥹❤️',

@@ -43,10 +43,12 @@ function commandFromMessage(message) {
   return (text.split(/\s+/)[0]?.toLowerCase() || '').split('@')[0];
 }
 
-async function recordPremiumHqSuccess(userId, chatId) {
+async function recordPremiumHqSuccess(userId, chatId, completionId) {
+  const marked = await markPremiumHqCompleted(userId, completionId);
+  if (!marked) return false;
   await recordUsage(userId, 'status_hq');
-  await markPremiumHqCompleted(userId);
   await maybePromptChannelAfterSuccess(chatId, userId);
+  return true;
 }
 
 async function processMessage(message, context) {
@@ -104,7 +106,7 @@ async function runWebhookUpdate(update, context) {
     const premiumResult = await processStatusButton(callbackQuery, context);
     if (premiumResult) {
       if (action.startsWith(MEDIA_STATUS_HQ) && premiumResult?.premiumVideoCompleted) {
-        await recordPremiumHqSuccess(userId, chatId);
+        await recordPremiumHqSuccess(userId, chatId, `telegram:${callbackQuery.id}`);
       }
       return;
     }
