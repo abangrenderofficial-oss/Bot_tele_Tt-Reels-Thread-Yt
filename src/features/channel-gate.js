@@ -28,6 +28,20 @@ function membershipAllowed(member = {}) {
   return member?.status === 'restricted' && member?.is_member === true;
 }
 
+function traceEnabled(userId) {
+  const target = String(process.env.CHANNEL_GATE_TRACE_USER_ID || '').trim();
+  return Boolean(target) && String(userId || '') === target;
+}
+
+function trace(userId, event, details = {}) {
+  if (!traceEnabled(userId)) return;
+  console.info('[channel-gate-trace]', JSON.stringify({
+    userId: Number(userId),
+    event,
+    ...details,
+  }));
+}
+
 async function getMembership(userId) {
   if (!userId) return null;
   try {
@@ -35,8 +49,16 @@ async function getMembership(userId) {
       chat_id: channelUsername(),
       user_id: userId,
     });
-    return membershipAllowed(member);
+    const allowed = membershipAllowed(member);
+    trace(userId, 'membership', {
+      channel: channelUsername(),
+      status: String(member?.status || 'unknown'),
+      isMember: member?.is_member === undefined ? null : Boolean(member.is_member),
+      allowed,
+    });
+    return allowed;
   } catch (error) {
+    trace(userId, 'membership_error', { error: String(error?.message || error).slice(0, 300) });
     console.warn('[channel-gate] getChatMember failed:', error?.message);
     return null;
   }
@@ -70,7 +92,9 @@ export async function sendChannelGatePrompt(chatId) {
 
 export async function maybePromptChannelAfterSuccess(chatId, userId) {
   if (!chatId || !userId || isResetAdmin(userId)) return false;
-  if (!(await hasChannelGateRequired(userId))) return false;
+  const gateRequired = await hasChannelGateRequired(userId);
+  trace(userId, 'after_success_gate_check', { gateRequired });
+  if (!gateRequired) return false;
   if (await hasJoinPromptBeenSent(userId)) return false;
 
   const member = await getMembership(userId);
@@ -79,6 +103,7 @@ export async function maybePromptChannelAfterSuccess(chatId, userId) {
   try {
     await sendChannelGatePrompt(chatId);
     await markJoinPromptSent(userId);
+    trace(userId, 'after_success_prompt', { prompted: true });
     return true;
   } catch (error) {
     console.warn('[channel-gate] threshold prompt failed:', error?.message);
@@ -91,11 +116,17 @@ export async function enforceChannelGateForMessage(message = {}) {
   const userId = message?.from?.id;
   const chatType = message?.chat?.type;
   if (!chatId || !userId || chatType !== 'private' || isResetAdmin(userId)) return false;
-  if (!(await hasChannelGateRequired(userId))) return false;
+  const gateRequired = await hasChannelGateRequired(userId);
+  trace(userId, 'message_gate_check', { gateRequired, chatType });
+  if (!gateRequired) return false;
 
   const member = await getMembership(userId);
-  if (member !== false) return false;
+  if (member !== false) {
+    trace(userId, 'message_gate_result', { blocked: false, membership: member });
+    return false;
+  }
 
+  trace(userId, 'message_gate_result', { blocked: true, membership: false });
   await sendChannelGatePrompt(chatId).catch((error) => {
     console.warn('[channel-gate] message gate prompt failed:', error?.message);
   });
@@ -107,11 +138,21 @@ export async function enforceChannelGateForCallback(callbackQuery = {}) {
   const chatType = callbackQuery?.message?.chat?.type;
   const userId = callbackQuery?.from?.id;
   if (!chatId || !userId || chatType !== 'private' || isResetAdmin(userId)) return false;
-  if (!(await hasChannelGateRequired(userId))) return false;
+  const gateRequired = await hasChannelGateRequired(userId);
+  trace(userId, 'callback_gate_check', {
+    gateRequired,
+    chatType,
+    action: String(callbackQuery?.data || '').slice(0, 100),
+  });
+  if (!gateRequired) return false;
 
   const member = await getMembership(userId);
-  if (member !== false) return false;
+  if (member !== false) {
+    trace(userId, 'callback_gate_result', { blocked: false, membership: member });
+    return false;
+  }
 
+  trace(userId, 'callback_gate_result', { blocked: true, membership: false });
   await telegram('answerCallbackQuery', {
     callback_query_id: callbackQuery.id,
     text: 'Join channel kita dulu ya 😊',
@@ -130,8 +171,10 @@ export async function processChannelGateCallback(callbackQuery = {}) {
   const userId = callbackQuery?.from?.id;
   if (!chatId || !userId) return true;
 
+  trace(userId, 'verify_callback_received', { action: CHANNEL_VERIFY_CALLBACK });
   const member = await getMembership(userId);
   if (member === true) {
+    trace(userId, 'verify_callback_result', { verified: true });
     await telegram('answerCallbackQuery', {
       callback_query_id: callbackQuery.id,
       text: 'Dah verify ✅',
@@ -150,6 +193,7 @@ export async function processChannelGateCallback(callbackQuery = {}) {
   }
 
   if (member === false) {
+    trace(userId, 'verify_callback_result', { verified: false });
     await telegram('answerCallbackQuery', {
       callback_query_id: callbackQuery.id,
       text: `Belum nampak lagi 😅 Join ${channelUsername()} dulu, lepas tu tekan “Dah Join ✅” sekali lagi.`,
@@ -158,6 +202,7 @@ export async function processChannelGateCallback(callbackQuery = {}) {
     return true;
   }
 
+  trace(userId, 'verify_callback_result', { verified: null });
   await telegram('answerCallbackQuery', {
     callback_query_id: callbackQuery.id,
     text: 'Telegram tengah tak dapat verify sekarang. Cuba lagi kejap ya.',
