@@ -14,6 +14,9 @@ export const START_TEXT = [
   'Boleh juga upload media video atau photo dari gallery untuk:',
   '• 📱 Status HQ',
   '• 🍎 Live Wallpaper iPhone',
+  '',
+  '❤️ Nak support bot & kos server?',
+  'Tekan /support untuk pilih amount dan terus ke payment.',
 ].join('\n');
 
 export function commandMenuText(userId) {
