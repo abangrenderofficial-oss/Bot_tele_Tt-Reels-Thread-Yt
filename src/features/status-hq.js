@@ -119,6 +119,7 @@ export async function processStatusButton(callbackQuery, context = {}) {
   if (heavyCandidate) {
     const progressMessage = await startHeavyStatusProgress(chatId);
     try {
+      const baseUrl = String(context.baseUrl || '').replace(/\/$/, '');
       await dispatchHeavyMediaJob({
         chatId,
         videoFileId,
@@ -126,8 +127,9 @@ export async function processStatusButton(callbackQuery, context = {}) {
         action: 'status_hq',
         progressMessageId: progressMessage?.message_id || 0,
         sourceMessageId: gallery.sourceMessageId,
+        completionUrl: baseUrl ? `${baseUrl}/api/heavy-complete` : '',
       });
-      return { premiumVideoCompleted: true };
+      return { premiumVideoDispatched: true };
     } catch (error) {
       console.error('[status-hq/heavy] dispatch failed:', error?.code, error?.message);
       await removeHeavyProgress(chatId, progressMessage?.message_id);
@@ -154,7 +156,6 @@ export async function processStatusButton(callbackQuery, context = {}) {
       }
       await progress.complete();
       await sendDocumentFileUpload(chatId, prepared.filePath, await statusImageCaption(), 'status-hq.jpg');
-      premiumVideoCompleted = true;
     } else {
       prepared = await localMediaLane(async () => {
         let sourceError = null;
