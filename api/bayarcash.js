@@ -100,25 +100,26 @@ export default async function handler(req, res) {
     await sendMessage(result.telegramUserId, confirmationText(result, submission)).catch((error) => {
       console.warn('[bayarcash] Telegram confirmation failed:', error?.message);
     });
+  }
 
-    if (
-      !isBayarcashSandbox()
-      && submission?.supportMessage
-      && submission?.displayName
-      && submission?.tierLabel
-      && !submission?.announcedAt
-    ) {
-      try {
-        await sendMessage(supportChannelUsername(), supporterPostText(submission));
-        await markSupportSubmissionAnnounced(result.orderNumber);
-        console.log('[bayarcash] supporter testimonial announced', {
-          order_number: result.orderNumber,
-          channel: supportChannelUsername(),
-          tier: submission.tierKey,
-        });
-      } catch (error) {
-        console.warn('[bayarcash] supporter channel announcement failed:', error?.message);
-      }
+  if (
+    result?.paid
+    && !isBayarcashSandbox()
+    && submission?.supportMessage
+    && submission?.displayName
+    && submission?.tierLabel
+    && !submission?.announcedAt
+  ) {
+    try {
+      await sendMessage(supportChannelUsername(), supporterPostText(submission));
+      await markSupportSubmissionAnnounced(result.orderNumber);
+      console.log('[bayarcash] supporter testimonial announced', {
+        order_number: result.orderNumber,
+        channel: supportChannelUsername(),
+        tier: submission.tierKey,
+      });
+    } catch (error) {
+      console.warn('[bayarcash] supporter channel announcement failed:', error?.message);
     }
   }
 
