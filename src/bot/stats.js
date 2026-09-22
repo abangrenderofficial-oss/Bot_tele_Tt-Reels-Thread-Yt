@@ -4,9 +4,9 @@ import { sendMessage, telegram } from '../telegram.js';
 
 const EVENT_TYPES = new Set(['download', 'status_hq', 'live_wallpaper']);
 const STATS_FILE = String(process.env.STATS_FILE_PATH || '/data/bot-stats.json');
-const STATS_VERSION = 2;
-const CHANNEL_GATE_COUNTER_VERSION = 2;
-export const CHANNEL_GATE_THRESHOLD = 5;
+const STATS_VERSION = 3;
+const CHANNEL_GATE_COUNTER_VERSION = 3;
+export const CHANNEL_GATE_THRESHOLD = 1;
 export const PREMIUM_HQ_CHANNEL_GATE_THRESHOLD = CHANNEL_GATE_THRESHOLD;
 
 let statePromise = null;
@@ -115,6 +115,7 @@ function touchUser(state, userId, now = new Date()) {
     channelUseCount,
     premiumHqCompletedCount,
     premiumHqCompleted: premiumHqCompletedCount >= PREMIUM_HQ_CHANNEL_GATE_THRESHOLD,
+    lastPremiumHqCompletionId: counterWasCurrent ? String(old.lastPremiumHqCompletionId || '') : '',
     joinPromptSent: counterWasCurrent ? Boolean(old.joinPromptSent) : false,
   };
   state.users[key] = user;
@@ -131,10 +132,7 @@ export async function recordUsage(userId, eventType = null) {
     const user = touchUser(state, userId, now);
     if (!user) return;
 
-    if (eventType) {
-      user.completedUse = true;
-      user.channelUseCount = Math.max(0, Number(user.channelUseCount || 0)) + 1;
-    }
+    if (eventType) user.completedUse = true;
 
     if (eventType === 'download') {
       const month = monthKey(now);
@@ -169,14 +167,19 @@ export async function hasChannelGateRequired(userId) {
   return (await getChannelUseCount(userId)) >= CHANNEL_GATE_THRESHOLD;
 }
 
-export async function markPremiumHqCompleted(userId) {
+export async function markPremiumHqCompleted(userId, completionId = '') {
   const key = validUserKey(userId);
   if (!key) return false;
+  const normalizedCompletionId = String(completionId || '').trim().slice(0, 160);
   await mutate((state) => {
     const user = touchUser(state, userId, new Date());
     if (!user) return;
+    if (normalizedCompletionId && user.lastPremiumHqCompletionId === normalizedCompletionId) return;
+
     user.premiumHqCompletedCount = Math.max(0, Number(user.premiumHqCompletedCount || 0)) + 1;
-    user.premiumHqCompleted = user.premiumHqCompletedCount >= PREMIUM_HQ_CHANNEL_GATE_THRESHOLD;
+    user.premiumHqCompleted = true;
+    user.channelUseCount = CHANNEL_GATE_THRESHOLD;
+    if (normalizedCompletionId) user.lastPremiumHqCompletionId = normalizedCompletionId;
   });
   return true;
 }
