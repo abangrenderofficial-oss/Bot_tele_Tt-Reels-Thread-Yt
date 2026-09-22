@@ -10,6 +10,7 @@ import diagnosticHandler from './api/diagnostic.js';
 import statusDiagnosticHandler from './api/status-diagnostic.js';
 import bayarcashHandler from './api/bayarcash.js';
 import supportReturnHandler from './api/support-return.js';
+import heavyCompleteHandler from './api/heavy-complete.js';
 
 const MAX_BODY_BYTES = 5 * 1024 * 1024;
 
@@ -23,6 +24,7 @@ const routes = new Map([
   ['/api/status-diagnostic', statusDiagnosticHandler],
   ['/api/bayarcash', bayarcashHandler],
   ['/api/support-return', supportReturnHandler],
+  ['/api/heavy-complete', heavyCompleteHandler],
 ]);
 
 function addResponseHelpers(res) {
