@@ -13,7 +13,7 @@ jobs:
       - name: Wait for Vercel deployment
         run: sleep 70
 
-      - name: Verify production heavy limit is 200MB
+      - name: Verify production gallery Premium HQ mode
         shell: bash
         run: |
           set -euo pipefail
@@ -22,11 +22,15 @@ jobs:
           for TRY in 1 2 3 4 5; do
             OUT=$(curl -fsS --max-time 30 "$URL" || true)
             echo "try=$TRY $OUT"
-            if echo "$OUT" | grep -q '"heavy_video_limit_mb":200'; then
+            if echo "$OUT" | grep -q '"heavy_video_limit_mb":200' \
+              && echo "$OUT" | grep -q '"gallery_premium_hq_codec":"hevc"' \
+              && echo "$OUT" | grep -q '"gallery_premium_hq_pixel_format":"yuv420p"' \
+              && echo "$OUT" | grep -q '"gallery_premium_hq_bit_depth":8' \
+              && echo "$OUT" | grep -q '"social_premium_hq_preset":"unchanged"'; then
               echo "$OUT" | grep -q '"ok":true'
               exit 0
             fi
             sleep 20
           done
-          echo "Production did not report 200MB limit. Last response: $OUT"
+          echo "Production did not report gallery-only Premium HQ compatibility mode. Last response: $OUT"
           exit 1
