@@ -67,6 +67,7 @@ jobs:
       HEAVY_VIDEO_FILE_ID: ${{ inputs.video_file_id }}
       HEAVY_FILE_SIZE: ${{ inputs.file_size }}
       HEAVY_ACTION: status_hq
+      HEAVY_SOURCE_KIND: ${{ inputs.source_kind }}
       HEAVY_PROGRESS_MESSAGE_ID: ${{ inputs.progress_message_id }}
       HEAVY_SOURCE_MESSAGE_ID: ${{ inputs.source_message_id }}
       HEAVY_VIDEO_MAX_MB: '500'
@@ -93,7 +94,23 @@ jobs:
         run: python -m pip install --disable-pip-version-check --quiet 'kurigram[fast]==2.2.26' requests
 
       - name: Process Status HQ
-        run: python scripts/heavy_status_worker.py
+        shell: bash
+        run: |
+          if [ "$HEAVY_SOURCE_KIND" = "gallery" ]; then
+            python - <<'PY'
+          from pathlib import Path
+
+          path = Path('scripts/heavy_status_worker.py')
+          text = path.read_text()
+          needle = "'-pix_fmt', 'yuv420p10le', '-tag:v', 'hvc1',"
+          replacement = "'-pix_fmt', 'yuv420p', '-tag:v', 'hvc1',"
+          if needle not in text:
+              raise SystemExit('Premium+ gallery pixel-format target not found')
+          path.write_text(text.replace(needle, replacement, 1))
+          print('Premium+ gallery compatibility: HEVC 8-bit yuv420p')
+          PY
+          fi
+          python scripts/heavy_status_worker.py
 
       - name: Record Premium HQ delivery
         if: ${{ success() && inputs.completion_callback_url != '' && inputs.user_id != '0' }}
