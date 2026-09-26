@@ -1,0 +1,32 @@
+name: Heavy Limit Production Smoke
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Wait for Vercel deployment
+        run: sleep 70
+
+      - name: Verify production heavy limit is 200MB
+        shell: bash
+        run: |
+          set -euo pipefail
+          URL='https://mdab-129.vercel.app/api/heavy-limit'
+          OUT=''
+          for TRY in 1 2 3 4 5; do
+            OUT=$(curl -fsS --max-time 30 "$URL" || true)
+            echo "try=$TRY $OUT"
+            if echo "$OUT" | grep -q '"heavy_video_limit_mb":200'; then
+              echo "$OUT" | grep -q '"ok":true'
+              exit 0
+            fi
+            sleep 20
+          done
+          echo "Production did not report 200MB limit. Last response: $OUT"
+          exit 1
