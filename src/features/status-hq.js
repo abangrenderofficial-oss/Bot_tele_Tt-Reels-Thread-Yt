@@ -175,7 +175,13 @@ export async function processStatusButton(callbackQuery, context = {}) {
 
         try {
           const telegramVideo = await getTelegramFileSource(fileId);
-          return await prepareWhatsAppStatusHQ({ sourceUrl: '', platform: 'telegram', video: telegramVideo, audio: null });
+          return await prepareWhatsAppStatusHQ({
+            sourceUrl: '',
+            platform: 'telegram',
+            video: telegramVideo,
+            audio: null,
+            galleryCompatible: Boolean(gallery),
+          });
         } catch (telegramError) {
           if (sourceError) throw sourceError;
           throw telegramError;
