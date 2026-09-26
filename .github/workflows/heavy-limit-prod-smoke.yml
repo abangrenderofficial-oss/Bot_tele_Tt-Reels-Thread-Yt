@@ -26,11 +26,12 @@ jobs:
               && echo "$OUT" | grep -q '"gallery_premium_hq_codec":"hevc"' \
               && echo "$OUT" | grep -q '"gallery_premium_hq_pixel_format":"yuv420p"' \
               && echo "$OUT" | grep -q '"gallery_premium_hq_bit_depth":8' \
-              && echo "$OUT" | grep -q '"social_premium_hq_preset":"unchanged"'; then
+              && echo "$OUT" | grep -q '"gallery_premium_hq_scope":"all-gallery-local-and-heavy"' \
+              && echo "$OUT" | grep -q '"social_premium_hq_preset":"unchanged-main10"'; then
               echo "$OUT" | grep -q '"ok":true'
               exit 0
             fi
             sleep 20
           done
-          echo "Production did not report gallery-only Premium HQ compatibility mode. Last response: $OUT"
+          echo "Production did not report full gallery-only Premium HQ compatibility mode. Last response: $OUT"
           exit 1
