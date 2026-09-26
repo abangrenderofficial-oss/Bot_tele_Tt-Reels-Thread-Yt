@@ -1,6 +1,8 @@
 import { mirrorMediaToGroup } from '../bot/audit.js';
 import { galleryMediaActionButtons, MEDIA_STATUS_HQ } from '../bot/media-actions.js';
-import { sendChatAction, telegram } from '../telegram.js';
+import { sendChatAction, sendMessage, telegram } from '../telegram.js';
+
+const MAX_GALLERY_VIDEO_BYTES = 200 * 1024 * 1024;
 
 function formatFileSize(bytes) {
   const value = Number(bytes || 0);
@@ -72,6 +74,12 @@ export async function processUploadedVideo(message, context = {}) {
   const chatId = message?.chat?.id;
   const video = message?.video;
   if (!chatId || !video?.file_id) return false;
+
+  const fileSize = Number(video?.file_size || 0);
+  if (fileSize > MAX_GALLERY_VIDEO_BYTES) {
+    await sendMessage(chatId, '❌ Video terlalu besar. Maksimum upload dari gallery ialah 200MB.');
+    return true;
+  }
 
   const actions = galleryMediaActionButtons(message?.message_id, video?.file_size);
   await sendChatAction(chatId, 'upload_video').catch(() => {});
