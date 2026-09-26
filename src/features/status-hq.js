@@ -89,7 +89,7 @@ export async function processStatusButton(callbackQuery, context = {}) {
   if (gallery && fileSize > heavyVideoLimitBytes()) {
     await telegram('answerCallbackQuery', {
       callback_query_id: callbackQuery.id,
-      text: 'Sorry, you can only upload videos up to 150 MB.',
+      text: 'Sorry, you can only upload videos up to 200 MB.',
       show_alert: true,
     }).catch(() => {});
     return true;
