@@ -10,6 +10,7 @@ export default async function handler(req, res) {
     gallery_premium_hq_codec: 'hevc',
     gallery_premium_hq_pixel_format: 'yuv420p',
     gallery_premium_hq_bit_depth: 8,
-    social_premium_hq_preset: 'unchanged',
+    gallery_premium_hq_scope: 'all-gallery-local-and-heavy',
+    social_premium_hq_preset: 'unchanged-main10',
   });
 }
