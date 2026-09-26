@@ -127,6 +127,7 @@ export async function processStatusButton(callbackQuery, context = {}) {
         videoFileId,
         fileSize,
         action: 'status_hq',
+        sourceKind: 'gallery',
         progressMessageId: progressMessage?.message_id || 0,
         sourceMessageId: gallery.sourceMessageId,
         completionCallbackUrl: baseUrl ? `${baseUrl}/api/premium-hq-success` : '',
