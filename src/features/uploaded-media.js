@@ -2,7 +2,12 @@ import { mirrorMediaToGroup } from '../bot/audit.js';
 import { galleryMediaActionButtons, MEDIA_STATUS_HQ } from '../bot/media-actions.js';
 import { sendChatAction, sendMessage, telegram } from '../telegram.js';
 
-const MAX_GALLERY_VIDEO_BYTES = 200 * 1024 * 1024;
+export const MAX_GALLERY_VIDEO_BYTES = 200 * 1024 * 1024;
+
+export function isGalleryVideoTooLarge(fileSize = 0) {
+  const bytes = Number(fileSize || 0);
+  return Number.isFinite(bytes) && bytes > MAX_GALLERY_VIDEO_BYTES;
+}
 
 function formatFileSize(bytes) {
   const value = Number(bytes || 0);
@@ -76,7 +81,7 @@ export async function processUploadedVideo(message, context = {}) {
   if (!chatId || !video?.file_id) return false;
 
   const fileSize = Number(video?.file_size || 0);
-  if (fileSize > MAX_GALLERY_VIDEO_BYTES) {
+  if (isGalleryVideoTooLarge(fileSize)) {
     await sendMessage(chatId, '❌ Video terlalu besar. Maksimum upload dari gallery ialah 200MB.');
     return true;
   }
