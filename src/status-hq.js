@@ -322,7 +322,14 @@ function colorArgs(sourceProbe) {
   return ['-color_range', 'tv', '-color_primaries', 'bt709', '-color_trc', 'bt709', '-colorspace', 'bt709'];
 }
 
-async function encodeSingleStatusFile(inputPath, outputPath, plan, bitrateScale = 1, sourceProbe = null) {
+async function encodeSingleStatusFile(
+  inputPath,
+  outputPath,
+  plan,
+  bitrateScale = 1,
+  sourceProbe = null,
+  pixelFormat = 'yuv420p10le',
+) {
   await rm(outputPath, { force: true }).catch(() => {});
   const maxRateKbps = Math.max(280, Math.floor(plan.maxRateKbps * bitrateScale));
   const bufferKbps = Math.max(1000, maxRateKbps * 2);
@@ -335,7 +342,7 @@ async function encodeSingleStatusFile(inputPath, outputPath, plan, bitrateScale 
     '-vf', statusVideoFilter(plan),
     '-c:v', 'libx265', '-preset', 'ultrafast', '-crf', '18',
     '-maxrate', `${maxRateKbps}k`, '-bufsize', `${bufferKbps}k`,
-    '-pix_fmt', 'yuv420p10le', '-tag:v', 'hvc1',
+    '-pix_fmt', pixelFormat, '-tag:v', 'hvc1',
     '-x265-params', 'pools=1:frame-threads=1:vbv-init=0.8:scenecut=0',
     ...colorArgs(sourceProbe),
     ...(hasAudio
@@ -378,7 +385,13 @@ async function cleanup(paths) {
   await Promise.all([...new Set(paths)].map((filePath) => rm(filePath, { force: true }).catch(() => {})));
 }
 
-export async function prepareWhatsAppStatusHQ({ sourceUrl, platform, video, audio = null }) {
+export async function prepareWhatsAppStatusHQ({
+  sourceUrl,
+  platform,
+  video,
+  audio = null,
+  galleryCompatible = false,
+}) {
   const attemptId = randomUUID();
   const base = path.join(tmpdir(), `ar-status-${attemptId}`);
   const allPaths = [];
@@ -408,6 +421,7 @@ export async function prepareWhatsAppStatusHQ({ sourceUrl, platform, video, audi
     const plan = chooseEncodePlan(probe);
     const safeLimit = Math.floor(configuredUploadLimitBytes() * 0.94);
     const attempts = [1, 0.84, 0.7];
+    const pixelFormat = galleryCompatible ? 'yuv420p' : 'yuv420p10le';
     let encoded = null;
     let outputPath = '';
     let usedAttempt = 0;
@@ -415,7 +429,14 @@ export async function prepareWhatsAppStatusHQ({ sourceUrl, platform, video, audi
     for (let index = 0; index < attempts.length; index += 1) {
       outputPath = `${base}-premium-plus-v2-a${index + 1}.mp4`;
       allPaths.push(outputPath);
-      encoded = await encodeSingleStatusFile(inputPath, outputPath, plan, attempts[index], probe);
+      encoded = await encodeSingleStatusFile(
+        inputPath,
+        outputPath,
+        plan,
+        attempts[index],
+        probe,
+        pixelFormat,
+      );
       usedAttempt = index + 1;
       if (encoded.size <= safeLimit) break;
       await rm(outputPath, { force: true }).catch(() => {});
@@ -428,6 +449,8 @@ export async function prepareWhatsAppStatusHQ({ sourceUrl, platform, video, audi
     }
 
     await rm(inputPath, { force: true }).catch(() => {});
+    const codecLabel = galleryCompatible ? 'hevc-main8' : 'hevc-main10';
+    const qualityCodec = galleryCompatible ? 'HEVC Main 8-bit' : 'HEVC Main10';
     return {
       filePath: outputPath,
       size: encoded.size,
@@ -441,9 +464,9 @@ export async function prepareWhatsAppStatusHQ({ sourceUrl, platform, video, audi
         audioKbps: plan.audioKbps,
         hasAudio: encoded.hasAudio,
         colorMode: probe.colorMode,
-        codec: 'hevc-main10',
+        codec: codecLabel,
       },
-      quality: `Premium+ HQ V2 • 720p class • 29.97fps • HEVC Main10/AAC-LC • preservation-first • ${probe.colorMode.toUpperCase()}`,
+      quality: `Premium+ HQ V2 • 720p class • 29.97fps • ${qualityCodec}/AAC-LC • preservation-first • ${probe.colorMode.toUpperCase()}`,
       attempt: usedAttempt,
       cleanup: async () => cleanup(allPaths),
     };
