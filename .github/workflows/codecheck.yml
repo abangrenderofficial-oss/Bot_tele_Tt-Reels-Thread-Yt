@@ -22,6 +22,8 @@ jobs:
         run: npm run check
       - name: Check gallery upload 200MB boundary
         run: node scripts/gallery-upload-limit-selftest.mjs
+      - name: Check Premium HQ gallery isolation
+        run: node scripts/gallery-premium-scope-selftest.mjs
       - name: Check channel gate threshold
         run: node scripts/channel-gate-threshold-selftest.mjs
       - name: Verify channel membership access
