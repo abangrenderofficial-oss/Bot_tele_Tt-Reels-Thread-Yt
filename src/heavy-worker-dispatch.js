@@ -12,9 +12,10 @@ export function heavyWorkerConfigured() {
 }
 
 export function heavyVideoLimitBytes() {
-  const configuredMb = Number(process.env.HEAVY_VIDEO_MAX_MB || 150);
-  const mb = Number.isFinite(configuredMb) && configuredMb > 0 ? Math.min(configuredMb, 500) : 150;
-  return Math.floor(mb * MB);
+  // Product limit for gallery/heavy-media features.
+  // Keep this deterministic so a stale deployment env (previously 150MB)
+  // cannot silently lower the user-facing limit.
+  return 200 * MB;
 }
 
 export function shouldUseHeavyWorker(video = {}) {
